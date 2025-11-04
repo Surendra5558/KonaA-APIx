@@ -1,0 +1,312 @@
+# Whitespace Formatting RuleBook
+
+**Comprehensive guidelines for consistent whitespace formatting across the KonaAI.Master solution.**
+
+## 1) General Whitespace Standards
+
+### 1.1 Indentation Standards
+```csharp
+// ✅ Good: Consistent 4-space indentation
+public class ExampleClass
+{
+    public void ExampleMethod()
+    {
+        if (condition)
+        {
+            // Code here
+        }
+    }
+}
+
+// ❌ Bad: Inconsistent indentation (mixing tabs and spaces)
+public class ExampleClass
+{
+	public void ExampleMethod()
+    {
+        if (condition)
+		{
+            // Code here
+        }
+    }
+}
+```
+
+### 1.2 Line Break Standards
+```csharp
+// ✅ Good: Proper line breaks after namespace
+namespace KonaAI.Master.Repository.Configuration.Tenant.Client;
+
+/// <summary>
+/// Class documentation here.
+/// </summary>
+
+// ❌ Bad: Missing line breaks after namespace
+namespace KonaAI.Master.Repository.Configuration.Tenant.Client;
+/// <summary>
+/// Class documentation here.
+/// </summary>
+```
+
+## 2) XML Documentation Formatting
+
+### 2.1 XML Comment Indentation
+```csharp
+// ✅ Good: Proper XML comment indentation
+/// <summary>
+/// Configures the entity mapping and relationships for the <see cref="ClientLicense"/> entity.
+/// Sets up table schema, metadata properties, and relationships with LicenseType.
+/// </summary>
+
+// ❌ Bad: Incorrect XML comment indentation
+/// <summary>
+/// Configures the entity mapping and relationships for the <see cref="ClientLicense"/> entity.
+    /// Sets up table schema, metadata properties, and relationships with LicenseType.
+/// </summary>
+```
+
+### 2.2 XML Comment Line Breaks
+```csharp
+// ✅ Good: Proper XML comment formatting
+/// <summary>
+/// Applies configuration for the ProjectAuditResponsibility entity.
+/// </summary>
+/// <param name="builder">The builder used to configure the entity.</param>
+
+// ❌ Bad: Missing line breaks in XML comments
+/// <summary>Applies configuration for the ProjectAuditResponsibility entity.</summary>
+/// <param name="builder">The builder used to configure the entity.</param>
+```
+
+## 3) Object Initializer Formatting
+
+### 3.1 Object Initializer Indentation
+```csharp
+// ✅ Good: Proper object initializer formatting
+var result = new NavigationUserActionViewModel
+{
+    RowId = Guid.NewGuid(),
+    NavigationRowId = Guid.NewGuid(),
+    NavigationName = "Test Navigation",
+    UserActionRowId = Guid.NewGuid(),
+    UserActionName = "Test Action"
+};
+
+// ❌ Bad: Incorrect object initializer formatting
+var result = new NavigationUserActionViewModel
+{
+RowId = Guid.NewGuid(),
+NavigationRowId = Guid.NewGuid(),
+NavigationName = "Test Navigation",
+UserActionRowId = Guid.NewGuid(),
+UserActionName = "Test Action"
+};
+```
+
+### 3.2 Collection Initializer Formatting
+```csharp
+// ✅ Good: Proper collection initializer formatting
+var data = new List<MetaDataViewModel>
+{
+    new() { RowId = Guid.NewGuid(), Name = "Module 1", Description = "First module" },
+    new() { RowId = Guid.NewGuid(), Name = "Module 2", Description = "Second module" }
+};
+
+// ❌ Bad: Incorrect collection initializer formatting
+var data = new List<MetaDataViewModel>
+{
+new() { RowId = Guid.NewGuid(), Name = "Module 1", Description = "First module" },
+new() { RowId = Guid.NewGuid(), Name = "Module 2", Description = "Second module" }
+};
+```
+
+## 4) Method Parameter Formatting
+
+### 4.1 Constructor Parameter Formatting
+```csharp
+// ✅ Good: Proper constructor parameter formatting
+public ClientBusiness(
+    ILogger<ClientBusiness> logger,
+    IMapper mapper,
+    IUserContextService userContextService,
+    ILicenseService licenseService,
+    IUnitOfWork unitOfWork) : IClientBusiness
+
+// ❌ Bad: Incorrect constructor parameter formatting
+public ClientBusiness(
+    ILogger<ClientBusiness> logger,
+    IMapper mapper,
+    IUserContextService userContextService,ILicenseService licenseService,
+    IUnitOfWork unitOfWork) : IClientBusiness
+```
+
+### 4.2 Method Call Formatting
+```csharp
+// ✅ Good: Proper method call formatting
+var service = new ClientBusiness(
+    _logger.Object,
+    _mapper.Object,
+    _userContext.Object,
+    _licenseMock.Object,
+    _uow.Object);
+
+// ❌ Bad: Missing spaces in method calls
+var service = new ClientBusiness(
+    _logger.Object,
+    _mapper.Object,
+    _userContext.Object,_licenseMock.Object,
+    _uow.Object);
+```
+
+## 5) Conditional Statement Formatting
+
+### 5.1 If Statement Formatting
+```csharp
+// ✅ Good: Proper if statement formatting
+if (result == 0)
+{
+    // Code here
+}
+
+// ❌ Bad: Missing spaces around operators
+if(result == 0)
+{
+    // Code here
+}
+```
+
+### 5.2 Assignment Formatting
+```csharp
+// ✅ Good: Proper assignment formatting
+_ = await unitOfWork.Clients.DeleteAsync(rowId);
+
+// ❌ Bad: Missing spaces around assignment
+_= await unitOfWork.Clients.DeleteAsync(rowId);
+```
+
+## 6) Trailing Whitespace
+
+### 6.1 Line Endings
+```csharp
+// ✅ Good: Clean line endings without trailing spaces
+public class ExampleClass
+{
+    public void ExampleMethod()
+    {
+        // Code here
+    }
+}
+
+// ❌ Bad: Trailing spaces (shown as dots)
+public class ExampleClass
+{
+    public void ExampleMethod()
+    {
+        // Code here    
+    }
+}
+```
+
+## 7) Common Anti-Patterns to Avoid
+
+### ❌ Don't Do These
+- **Mixed Indentation**: Don't mix tabs and spaces
+- **Inconsistent Spacing**: Don't use inconsistent spacing around operators
+- **Trailing Spaces**: Don't leave trailing spaces at end of lines
+- **Missing Line Breaks**: Don't skip line breaks after namespace declarations
+- **Poor Object Initializer Formatting**: Don't use incorrect indentation in object initializers
+
+## 8) Best Practices
+
+### ✅ Do These
+- **Consistent Indentation**: Use 4 spaces consistently
+- **Proper Spacing**: Use spaces around operators and keywords
+- **Clean Line Endings**: Remove trailing spaces
+- **Proper Line Breaks**: Add line breaks after namespace declarations
+- **Consistent Object Initializers**: Use proper indentation in object initializers
+
+## 9) Validation Checklist
+
+### 9.1 Before Committing
+- [ ] No mixed tabs and spaces
+- [ ] Consistent 4-space indentation
+- [ ] Proper spacing around operators
+- [ ] No trailing spaces
+- [ ] Proper line breaks after namespace declarations
+- [ ] Consistent object initializer formatting
+
+### 9.2 Build Validation
+- [ ] Build passes without whitespace errors
+- [ ] No WHITESPACE formatting errors
+- [ ] Consistent code formatting throughout
+- [ ] All files follow the same formatting standards
+
+## 10) Common Issues and Solutions
+
+### 10.1 Mixed Indentation
+**Issue**: `Fix whitespace formatting. Replace X characters with '\s\s\s\s'`
+**Solution**: 
+- Convert all tabs to 4 spaces
+- Use consistent indentation throughout the file
+- Check for mixed tabs and spaces
+
+### 10.2 Missing Spaces
+**Issue**: `Fix whitespace formatting. Insert '\s'`
+**Solution**:
+- Add spaces around operators (`if (condition)` not `if(condition)`)
+- Add spaces around assignment operators (`_ = await` not `_= await`)
+- Add spaces around method parameters
+
+### 10.3 Line Break Issues
+**Issue**: `Fix whitespace formatting. Replace X characters with '\r\n'`
+**Solution**:
+- Add proper line breaks after namespace declarations
+- Ensure consistent line endings
+- Remove extra spaces and align comments properly
+
+### 10.4 Object Initializer Formatting
+**Issue**: Incorrect indentation in object initializers
+**Solution**:
+- Use consistent indentation for object properties
+- Align opening and closing braces properly
+- Use proper spacing in collection initializers
+
+## 11) Automated Formatting
+
+### 11.1 Using dotnet format
+```bash
+# Format all files in the solution
+dotnet format
+
+# Format specific project
+dotnet format KonaAI.Master.Business
+
+# Format with verbose output
+dotnet format --verbosity normal
+```
+
+### 11.2 IDE Configuration
+- **Visual Studio**: Configure to use 4 spaces for indentation
+- **VS Code**: Configure editor.tabSize to 4
+- **Rider**: Configure code style settings for C#
+
+## 12) Pre-commit Hooks
+
+### 12.1 Git Hooks
+```bash
+# Pre-commit hook to check formatting
+#!/bin/sh
+dotnet format --verify-no-changes
+if [ $? -ne 0 ]; then
+    echo "Code formatting issues detected. Run 'dotnet format' to fix."
+    exit 1
+fi
+```
+
+### 12.2 CI/CD Integration
+```yaml
+# GitHub Actions example
+- name: Check code formatting
+  run: dotnet format --verify-no-changes
+```
+
+This rulebook ensures consistent, maintainable, and error-free whitespace formatting across the KonaAI.Master solution.

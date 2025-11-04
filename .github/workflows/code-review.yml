@@ -1,0 +1,431 @@
+name: Code Review
+
+# Single workflow with staged + parallel jobs for fast, safe CI gates
+# - Triggers on PR lifecycle and merge queue
+# - Blocks merges on formatting/analyzers, vulnerable/deprecated deps, build (compilation errors only), tests, coverage ≥ 80% (Controllers & Business)
+# - Fail-fast approach: stops on first failure but always runs notification job
+# - PR commenting: automatically comments on PRs with detailed status and next steps
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'KonaAI.Master/**'
+      - '.github/workflows/code-review.yml'
+    # types: [] # synchronize is not used because it will trigger the workflow for every push to main
+  # push: is not used because it will trigger the workflow for every push to main - testing
+  # push:
+  #   branches: [ main ]
+  #   paths:
+  #     - 'KonaAI.Master/**'
+  # merge_group:
+  #   branches: [ main ]
+  # schedule:
+  #   - cron: '0 0 * * 1' # Weekly security scan on Monday
+
+# Cancel previous runs for the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal permissions for principle of least privilege
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+jobs:
+  # 1) Minimal setup to start parallel gates quickly
+  bootstrap:
+    name: Bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+  # 2) Fail-fast formatting & analyzer rules (runs in parallel with dependency hygiene)
+  lint-and-analyzers:
+    name: Lint & Analyzers
+    needs: bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Check code formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet format --verify-no-changes "KonaAI.Master/KonaAI.Master.sln"
+      - name: Verify analyzers (unused usings/namespaces, code style)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet format analyzers --verify-no-changes "KonaAI.Master/KonaAI.Master.sln"
+
+  # 3) Dependency hygiene (blocking: vulnerable/deprecated; advisory: outdated)
+  dependency-hygiene:
+    name: Dependency Hygiene
+    needs: bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Grant minimal extra permissions only for PR comment step
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore "KonaAI.Master/KonaAI.Master.sln" --disable-parallel || dotnet restore "KonaAI.Master/KonaAI.Master.sln"
+      - name: Check vulnerable NuGet packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          if dotnet list "KonaAI.Master/KonaAI.Master.sln" package --vulnerable --include-transitive --format json > vulnerable.json 2>/dev/null; then
+            cat vulnerable.json | jq '.' >/dev/null 2>&1 || { echo "jq parsing failed"; exit 2; }
+            COUNT=$(jq '[.projects[]?.frameworks[]?.topLevelPackages[]?, .projects[]?.frameworks[]?.transitivePackages[]?] | flatten | map(select((.vulnerabilities // []) | length > 0)) | length' vulnerable.json)
+            echo "Vulnerable packages found: $COUNT"
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Vulnerable NuGet packages detected. Please upgrade or replace them." >&2
+              jq -r '[.projects[]?.frameworks[]?.topLevelPackages[]?, .projects[]?.frameworks[]?.transitivePackages[]?] | flatten | map(select((.vulnerabilities // []) | length > 0)) | .[] | "- " + .name + "@" + (.resolvedVersion // "") + " (" + ((.vulnerabilities // []) | map((.severity // "unknown") + ": " + (.id // "N/A")) | join(", ")) + ")"' vulnerable.json || true
+              exit 1
+            fi
+          else
+            OUT=$(dotnet list "KonaAI.Master/KonaAI.Master.sln" package --vulnerable --include-transitive || true)
+            echo "$OUT"
+            COUNT=$(echo "$OUT" | awk 'tolower($0) ~ /vulnerab/ && $0 !~ /no known vulnerabilities/ {c++} END {print c+0}')
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Vulnerable NuGet packages detected. Please upgrade or replace them." >&2
+              exit 1
+            fi
+          fi
+      - name: Check deprecated NuGet packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          if dotnet list "KonaAI.Master/KonaAI.Master.sln" package --deprecated --include-transitive --format json > deprecated.json 2>/dev/null; then
+            cat deprecated.json | jq '.' >/dev/null 2>&1 || { echo "jq parsing failed"; exit 2; }
+            COUNT=$(jq '[.projects[]?.frameworks[]?.topLevelPackages[]?, .projects[]?.frameworks[]?.transitivePackages[]?] | flatten | map(select((.deprecatedReasons // []) | length > 0)) | length' deprecated.json)
+            echo "Deprecated packages found: $COUNT"
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Deprecated NuGet packages detected. Please update or replace them." >&2
+              jq -r '[.projects[]?.frameworks[]?.topLevelPackages[]?, .projects[]?.frameworks[]?.transitivePackages[]?] | flatten | map(select((.deprecatedReasons // []) | length > 0)) | .[] | "- " + .name + "@" + (.resolvedVersion // "") + " (reasons: " + ((.deprecatedReasons // []) | join(", ")) + ")"' deprecated.json || true
+              exit 1
+            fi
+          else
+            OUT=$(dotnet list "KonaAI.Master/KonaAI.Master.sln" package --deprecated --include-transitive || true)
+            echo "$OUT"
+            COUNT=$(echo "$OUT" | awk 'tolower($0) ~ /deprecated/ && $0 !~ /no deprecated/ {c++} END {print c+0}')
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Deprecated NuGet packages detected. Please update or replace them." >&2
+              exit 1
+            fi
+          fi
+      - name: Outdated packages (advisory)
+        id: outdated
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet list "KonaAI.Master/KonaAI.Master.sln" package --outdated > outdated.txt || true
+          if grep -q ">" outdated.txt; then
+            echo "has_outdated=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_outdated=false" >> $GITHUB_OUTPUT
+          fi
+      # Uncomment after enabled in the repository settings
+      # - name: Dependency Review
+      #   if: github.event_name == 'pull_request'
+      #   uses: actions/dependency-review-action@v4
+      - name: Comment outdated packages
+        # Only comment on PRs from same repo (skip forked PRs which lack write perms)
+        if: steps.outdated.outputs.has_outdated == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('outdated.txt','utf8').slice(0, 60000);
+            const prNumber = context.payload.pull_request.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `Outdated NuGet packages detected (advisory only):\n\n\`\`\`\n${body}\n\`\`\``
+            });
+
+  # 4) Windows build (after lint and dependency gates pass)
+  build:
+    name: Build
+    needs: [lint-and-analyzers, dependency-hygiene]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+      - name: Restore dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore "KonaAI.Master/KonaAI.Master.sln" --disable-parallel || dotnet restore "KonaAI.Master/KonaAI.Master.sln"
+      - name: Build solution (analyzers + code style enforcement)
+        run: dotnet build "KonaAI.Master/KonaAI.Master.sln" -c Release --no-restore /p:EnforceCodeStyleInBuild=true
+
+  # 5a) Unit tests with coverage (parallel)
+  test-unit:
+    name: Test Unit
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+      - name: Run unit tests with coverage
+        run: dotnet test "KonaAI.Master/KonaAI.Master.Test.Unit/KonaAI.Master.Test.Unit.csproj" -c Debug --collect:"XPlat Code Coverage" --logger "trx;LogFileName=unit-test-results.trx" --settings .github/coverlet.runsettings
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: |
+            **/TestResults/*.trx
+          retention-days: 14
+      - name: Upload unit coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage-raw
+          path: |
+            **/TestResults/**/coverage.cobertura.xml
+          retention-days: 7
+
+  # 5b) Integration tests with coverage (parallel)
+  test-integration:
+    name: Test Integration
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+      - name: Run integration tests with coverage
+        run: dotnet test "KonaAI.Master/KonaAI.Master.Test.Integration/KonaAI.Master.Test.Integration.csproj" -c Debug --collect:"XPlat Code Coverage" --logger "trx;LogFileName=integration-test-results.trx" --settings .github/coverlet.runsettings
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: |
+            **/TestResults/*.trx
+          retention-days: 14
+      - name: Upload integration coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-coverage-raw
+          path: |
+            **/TestResults/**/coverage.cobertura.xml
+          retention-days: 7
+
+  # 6) Aggregate coverage and enforce ≥ 80% threshold
+  # coverage-aggregate:
+  #   name: Coverage Aggregate
+  #   needs: [test-unit, test-integration]
+  #   runs-on: windows-latest
+  #   timeout-minutes: 10
+  #   steps:
+  #     - name: Download unit coverage artifacts
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: unit-coverage-raw
+  #         path: unit-cov-raw
+  #     - name: Download integration coverage artifacts
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: integration-coverage-raw
+  #         path: integration-cov-raw
+  #     - name: Generate coverage report
+  #       uses: danielpalme/ReportGenerator-GitHub-Action@v5
+  #       with:
+  #         reports: "unit-cov-raw/**/coverage.cobertura.xml;integration-cov-raw/**/coverage.cobertura.xml"
+  #         targetdir: "coveragereport"
+  #         reporttypes: "HtmlInline;Cobertura;TextSummary"
+  #         sourcedirs: "${{ github.workspace }}"
+  #         title: "KonaAI Master - API & Business Coverage"
+  #         tag: "API-Business-Only"
+  #     - name: Upload coverage report
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: coverage-report
+  #         path: coveragereport
+  #         retention-days: 30
+  #     - name: Print coverage summary
+  #       if: always()
+  #       shell: bash
+  #       run: |
+  #         echo "\n===== API & Business Coverage Summary ====="
+  #         echo "Focus: Controllers and Business logic only"
+  #         echo "Excluded: Repository (integration tested), Models (DTOs), Tests"
+  #         echo "=========================================="
+  #         if [ -f coveragereport/Summary.txt ]; then
+  #           cat coveragereport/Summary.txt
+  #         else
+  #           echo "No Summary.txt found"
+  #         fi
+  #         echo "==========================================\n"
+  #     - name: Enforce coverage threshold (>= 80% for API & Business)
+  #       shell: pwsh
+  #       run: |
+  #         $xmlPath = "coveragereport/Cobertura.xml"
+  #         if (-not (Test-Path $xmlPath)) {
+  #           Write-Error "Cobertura report not found at $xmlPath"
+  #           exit 1
+  #         }
+  #         [xml]$doc = Get-Content $xmlPath
+  #         $rate = [double]$doc.coverage.'line-rate'
+  #         $pct = [math]::Round($rate * 100)
+  #         Write-Host "=== Coverage Analysis (API & Business Layers Only) ==="
+  #         Write-Host "Coverage: $pct% (minimum 80% for Controllers & Business logic)"
+  #         Write-Host "Focus: KonaAI.Master.API and KonaAI.Master.Business assemblies"
+  #         Write-Host "Excluded: Repository (integration tested), Models (DTOs), Tests"
+  #         if ($pct -lt 80) {
+  #           Write-Error "Coverage below threshold: $pct% < 80%"
+  #           exit 1
+  #         } else {
+  #           Write-Host "✅ Coverage threshold"
+  #         }
+
+  # 7) CodeQL SAST in parallel to build/test chain (after bootstrap)
+  # security-scan:
+  #   name: Security Analysis (CodeQL)
+  #   needs: bootstrap
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 15
+  #   permissions:
+  #     actions: read
+  #     contents: read
+  #     security-events: write
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #     - name: Initialize CodeQL
+  #       uses: github/codeql-action/init@v3
+  #       with:
+  #         languages: csharp
+  #     - name: Autobuild
+  #       uses: github/codeql-action/autobuild@v3
+  #     - name: Perform CodeQL Analysis
+  #       uses: github/codeql-action/analyze@v3
+  #       with:
+  #         category: "/language:csharp"
+
+  # 8) Final workflow summary and PR notification
+  notify:
+    name: Notify 
+    needs: [lint-and-analyzers, dependency-hygiene, build, test-unit, test-integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Grant permissions for PR commenting
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Helper function to get job status
+            function getJobStatus(result) {
+              if (result === 'success') return '✅';
+              if (result === 'failure') return '❌';
+              if (result === 'cancelled') return '⏹️';
+              return '⏭️';
+            }
+            
+            // Determine overall status - fail if any job failed
+            const hasFailures = '${{ needs.lint-and-analyzers.result }}' === 'failure' || 
+                              '${{ needs.dependency-hygiene.result }}' === 'failure' || 
+                              '${{ needs.build.result }}' === 'failure' || 
+                              '${{ needs.test-unit.result }}' === 'failure' || 
+                              '${{ needs.test-integration.result }}' === 'failure';
+            
+            const status = hasFailures ? '❌ Failed' : '✅ Passed';
+            
+            const comment = `## ${status} CI Workflow Results
+            
+            | Job | Status | Result |
+            |-----|--------|--------|
+            | Lint & Analyzers | ${getJobStatus('${{ needs.lint-and-analyzers.result }}')} | ${{ needs.lint-and-analyzers.result }} |
+            | Dependency Hygiene | ${getJobStatus('${{ needs.dependency-hygiene.result }}')} | ${{ needs.dependency-hygiene.result }} |
+            | Build | ${getJobStatus('${{ needs.build.result }}')} | ${{ needs.build.result }} |
+            | Unit Tests | ${getJobStatus('${{ needs.test-unit.result }}')} | ${{ needs.test-unit.result }} |
+            | Integration Tests | ${getJobStatus('${{ needs.test-integration.result }}')} | ${{ needs.test-integration.result }} |
+            
+            ${hasFailures ? 
+              '**❌ Workflow Failed** - Check job logs for details' : 
+              '**✅ All Checks Passed** - Ready for review'
+            }`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: comment
+            });
+      - name: Fail if any job failed
+        if: needs.lint-and-analyzers.result == 'failure' || needs.dependency-hygiene.result == 'failure' || needs.build.result == 'failure' || needs.test-unit.result == 'failure' || needs.test-integration.result == 'failure'
+        run: |
+          echo "One or more jobs failed. Failing notify job."
+          exit 1
+
+

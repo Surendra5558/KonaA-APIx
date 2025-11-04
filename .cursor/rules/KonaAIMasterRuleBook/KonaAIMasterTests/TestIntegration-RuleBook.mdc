@@ -1,0 +1,205 @@
+---
+description: Updated integration testing strategy, flows, and rules for KonaAI.Master
+globs: KonaAI.Master/KonaAI.Master.Test.Integration/**
+alwaysApply: false
+---
+
+## KonaAI.Master Integration Testing RuleBook (Updated)
+
+Authoritative guide for writing, running, and maintaining integration tests in `KonaAI.Master.Test.Integration`.
+
+### 1) Core Strategy
+- **Automatic DB selection**: Prefer Testcontainers SQL Server in CI/CD; automatically fall back to in-memory EF Core locally (zero-config). Flags allow overriding either way.
+- **Factories-first**: Dedicated web app factories wire test auth, user context, and database (Testcontainers or in-memory) consistently.
+- **Auth & Multi-Tenancy**: Tests authenticate via a test scheme and set user/tenant context headers consumed by `TestUserContextService`.
+- **Scope**: End-to-end API calls, OData query behavior, business+UoW orchestration, repository integration, and multi-tenant isolation.
+- **Determinism**: Builders and seeders create stable test data. Database cleared between tests when appropriate.
+
+### 2) Test Infrastructure (What to use)
+- `Infrastructure/Factories/InMemoryWebApplicationFactory.cs`
+  - Sets environment "Testing"
+  - Registers `TestAuthenticationHandler`, `TestAuthorizationPolicyProvider`, `TestAuthorizationHandler`, `TestUserContextService`
+  - Replaces `DefaultContext` with `TestDbContext` via `TestDbContextWrapper`
+  - Registers `IUnitOfWork` as `TestUnitOfWork`
+  - Adds FluentValidation validators required by API
+
+- `Infrastructure/Factories/IntegrationTestWebApplicationFactory.cs`
+  - Same wiring as above, exposes helpers to seed/clear DB and create authenticated clients
+
+- `Infrastructure/TestDbContext.cs`
+  - Mirrors `DefaultContext` DbSets and applies global tenant filter using `IUserContextService.UserContext.ClientId`
+  - Applies audit fields on save
+
+- `Infrastructure/Fixtures/InMemoryDatabaseFixture.cs` (and related)
+  - Centralized creation of shared in-memory `DbContextOptions`
+  - Helpers to seed and clear database state
+
+- `Infrastructure/TestData/Builders/*` and `Infrastructure/TestData/Seeders/TestDataSeeder.cs`
+  - Reusable test data patterns for stable, readable tests
+
+### 3) How to write API integration tests
+1. Choose the factory:
+   - Prefer `InMemoryWebApplicationFactory` for speed and no external deps.
+   - Use `IntegrationTestWebApplicationFactory` when you need extra helpers already provided there.
+2. Create client:
+   - Authenticated: `CreateAuthenticatedClientAsync()`
+   - With user context: `CreateClientWithUserContext(clientId, userId?, role?)`
+3. Seed data when needed via fixture/factory before Act.
+4. Exercise endpoints with realistic headers and OData queries.
+5. Assert on HTTP status, payload shape, and side effects in DB via `TestDbContext`.
+
+#### Minimal example
+```csharp
+    [Fact]
+public async Task Get_RenderTypes_ReturnsOk()
+    {
+    await _factory.SeedDatabaseAsync();
+    var client = await _factory.CreateAuthenticatedClientAsync();
+
+    var response = await client.GetAsync("/api/v1/RenderTypes");
+
+    response.StatusCode.Should().Be(HttpStatusCode.OK);
+}
+```
+
+#### Multi-tenant header pattern
+```csharp
+var client = _factory.CreateClientWithUserContext(clientId: 1, userId: "user1", role: "Admin");
+// X-Client-Id, X-User-Id, and X-User-Role headers are added by helpers
+```
+
+### 4) OData tests
+- Use `[EnableQuery]` endpoints with `$filter`, `$orderby`, `$expand`, `$count`, `$top` to verify behavior.
+- Include guard tests for max page sizes and server-side restrictions.
+- Files: `API/OData/*`, controller-specific tests under `Controllers/**`.
+
+### 5) Authentication & Authorization
+- Auth is handled by `TestAuthenticationHandler` with scheme `Test`.
+- Policy evaluation uses `TestAuthorizationPolicyProvider` and `TestAuthorizationHandler` respecting authentication.
+- For role/tenant dependent tests, set the headers via factory helpers.
+
+### 6) Multi-Tenancy & Isolation
+- `TestDbContext` applies a global query filter for `BaseClientDomain` using `UserContextService.UserContext.ClientId`.
+- Always set `X-Client-Id` when asserting scoping.
+- Use `SeedMultiTenantDataAsync()` or multiple `SeedDataAsync(clientId)` calls to validate isolation.
+
+### 7) Repository and Business integration tests
+- Repository: instantiate via DI off the factory scope or by creating a `TestDbContext` instance from fixture.
+- Business: run end-to-end via API tests when possible; direct business tests allowed where helpful.
+
+### 8) Data lifecycle (seeding and cleanup)
+- Prefer builders and `TestDataSeeder` for consistency.
+- Clean state using fixture/factory `ClearDatabaseAsync()` between tests that mutate state.
+- Keep tests independent; do not depend on execution order.
+
+### 9) Categories, collections, and performance
+- Use `[Collection("InMemoryDatabaseCollection")]` or other collection fixtures to coordinate shared state.
+- Tag long-running or throughput scenarios under `Performance/` and use `[Category("Performance")]` when appropriate.
+- Example: `Performance/Concurrent/ConcurrentOperationsTests.cs`.
+
+### 10) Common recipes
+- Auth token retrieval (when required by test): use factory `CreateAuthenticatedClientAsync()` or `TestHelpers.GetAuthTokenAsync`.
+- OData smoke and route validation: see `API/OData/ODataSmokeTests.cs`, `ODataRouteDebugTest.cs`.
+- CRUD smoke for controllers: `API/Controllers/ControllerCrudSmokeTests.cs`.
+- Multi-tenancy isolation: `API/MultiTenancy/*` plus controller-specific tests.
+
+### 11) Quality bar
+- Assert both status and payload (shape, required fields, counts).
+- When DB is mutated, verify state via `TestDbContext` queries.
+- Logically structure Arrange/Act/Assert, use builders for clarity.
+- Avoid over-mocking: prefer real wiring of DI in factories.
+
+### 12) CI/CD alignment
+- In CI/CD, tests run against real SQL Server via Testcontainers when available for production-like behavior; pipeline can fall back to in-memory if Docker is unavailable.
+- Coverage is measured separately per the Code Review workflow; these tests primarily validate repository, business wiring, API behavior, OData, and multi-tenancy.
+
+### 12.1) Database selection controls
+- Default behavior: Try Testcontainers; on failure, use in-memory.
+- Environment toggles:
+  - `TESTCONTAINERS_DISABLE=true` to force in-memory (skip Docker)
+  - `TESTCONTAINERS_REQUIRE_DOCKER=true` to require Docker (fail if unavailable)
+
+```csharp
+// Fixture intent (illustrative):
+public async Task InitializeAsync()
+{
+    try
+    {
+        await InitializeWithTestcontainers();
+        _useTestcontainers = true;
+    }
+    catch
+    {
+        await InitializeWithInMemory();
+        _useTestcontainers = false;
+    }
+}
+```
+
+### 13) Anti-patterns to avoid
+- Relying on execution order or shared mutable state not coordinated by a fixture.
+- Skipping tenant headers when asserting isolation.
+- Asserting implementation details instead of observable outcomes (HTTP + DB state).
+- Re-implementing DI wiring per test; use provided factories.
+
+### 14) File map (reference)
+- Factories: `Infrastructure/Factories/*.cs`
+- Contexts/Fixtures: `Infrastructure/TestDbContext*.cs`, `Infrastructure/Fixtures/*.cs`
+- Auth/Policy: `Infrastructure/Helpers/*`
+- Builders/Seeders: `Infrastructure/TestData/**`
+- OData: `API/OData/*.cs`
+- Controllers: `Controllers/**`
+- Business/Repository: `Business/**`, `Repository/**`
+
+### 15) When to add new tests
+- New controller endpoints or OData query paths
+- New business use-cases affecting observable behavior
+- Multi-tenant data access changes
+- AuthZ policy changes or new roles
+- Repository query changes with material impact on results/performance
+
+### 16) Maintenance tips
+- Prefer shared builders/seeders over ad-hoc inline data
+- Keep factory wiring minimal and consistent with Program startup
+- Periodically prune test data to maintain speed and determinism
+- Review performance-tagged tests to ensure time limits remain realistic
+
+### 17) Quick checklist (per test)
+- Uses appropriate factory and client
+- Seeds the minimal data needed
+- Sets auth and tenant headers as needed
+- Asserts HTTP status + payload + side effects
+- Cleans up or leverages fixture cleanup
+
+---
+### 18) Categories and filtering
+- Recommended category attributes (as used across the suite):
+  - `[ApiIntegration]`, `[RepositoryIntegration]`, `[BusinessIntegration]`
+  - `[Performance]`, `[Concurrent]`, `[LargeDataset]`, `[Load]`, `[Stress]`, `[Endurance]`, `[Benchmark]`
+  - `[MultiTenancy]`, `[Authentication]`, `[OData]`, `[EndToEnd]`, `[Slow]`
+
+- Run filters examples:
+```bash
+dotnet test --filter Category=ApiIntegration
+dotnet test --filter Category=RepositoryIntegration
+dotnet test --filter Performance
+dotnet test --filter MultiTenancy
+dotnet test --filter OData
+```
+### Documentation References
+- Docs/KonaAI.Master/KonaAI.Master.TestIntegration/INTEGRATION_TEST_ARCHITECTURE.md
+- Docs/KonaAI.Master/KonaAI.Master.TestIntegration/INTEGRATION_TEST_REDESIGN_COMPLETE_GUIDE.md
+- Docs/KonaAI.Master/KonaAI.Master.TestIntegration/INTEGRATION_TEST_REDESIGN_SUMMARY.md
+- Docs/KonaAI.Master/KonaAI.Master.TestIntegration/TEST_DATA_MANAGEMENT.md
+- Docs/KonaAI.Master/KonaAI.Master.TestIntegration/PERFORMANCE_TESTING_GUIDE.md
+
+These documents provide deeper architecture, redesign rationale, performance patterns, and comprehensive data management guidance and should be consulted for complex scenarios or when extending infrastructure.
+
+---
+mdc:KonaAI.Master/KonaAI.Master.Test.Integration/Infrastructure/Factories/InMemoryWebApplicationFactory.cs
+mdc:KonaAI.Master/KonaAI.Master.Test.Integration/Infrastructure/Factories/IntegrationTestWebApplicationFactory.cs
+mdc:KonaAI.Master/KonaAI.Master.Test.Integration/Infrastructure/TestDbContext.cs
+mdc:KonaAI.Master/KonaAI.Master.Test.Integration/Infrastructure/Fixtures/InMemoryDatabaseFixture.cs
+mdc:KonaAI.Master/KonaAI.Master.Test.Integration/Infrastructure/TestData/Seeders/TestDataSeeder.cs
+mdc:KonaAI.Master/KonaAI.Master.Test.Integration/API/OData/ODataSmokeTests.cs
+mdc:KonaAI.Master/KonaAI.Master.Test.Integration/API/Controllers/ControllerCrudSmokeTests.cs

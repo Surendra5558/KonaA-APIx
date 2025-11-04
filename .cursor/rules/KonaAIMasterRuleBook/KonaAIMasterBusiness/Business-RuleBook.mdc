@@ -1,0 +1,463 @@
+---
+description: Business layer rules for KonaAI.Master.Business covering use-cases, invariants, interfaces, mapping, and logging.
+globs: KonaAI.Master/KonaAI.Master.Business/***
+alwaysApply: false
+modifiedAt: 2025-09-29
+---
+# KonaAI.Master.Business RuleBook
+
+Guidance for implementing business use-cases, enforcing invariants, mapping models, and collaborating with repositories.
+
+## 1) Responsibilities & Boundaries
+- Implement application use-cases; no HTTP concerns, no EF Core DbContext usage directly.
+- Depend on repository abstractions (`IUnitOfWork`, repositories); do not reference API layer.
+- Re-validate critical invariants even if API validated inputs.
+
+## 2) Interfaces & DI
+- Define clear interfaces under `.../Logic/Interface` (e.g., `IClientBusiness`).
+- Keep implementation classes alongside (e.g., `ClientBusiness`) and register via scanning in API DI.
+- Favor dependency inversion; inject `ILogger<T>`, `IUnitOfWork`, `IMapper`, and `IUserContextService` when needed.
+
+```csharp
+public class ClientBusiness(
+    ILogger<ClientBusiness> logger,
+    IMapper mapper,
+    IUserContextService userContextService,
+    IUnitOfWork unitOfWork) : IClientBusiness
+{
+    // ...
+}
+```
+
+## 3) Logging & Error Handling
+- Log start/end of each public method with method name.
+- Log errors with contextual details; rethrow meaningful exceptions.
+- Do not log secrets; avoid logging raw payloads.
+
+```csharp
+const string methodName = $"{ClassName}: {nameof(GetAsync)}";
+logger.LogInformation("{MethodName} - method execution started", methodName);
+try { /* work */ }
+catch (Exception e)
+{
+  logger.LogError("{MethodName} - Error: {Message}", methodName, e.Message);
+  throw;
+}
+finally { logger.LogInformation("{MethodName} - method execution completed", methodName); }
+```
+
+## 4) Data Access Collaboration
+- Use `IUnitOfWork` to access repositories and scope transactions.
+- Use query composition and projection to ViewModels via AutoMapper or LINQ `.Select()`.
+- Respect tenant scoping implicitly enforced by Repository via `IUserContextService`.
+
+### EF-translatable IQueryable projections (Server-side joins)
+- Prefer composing read queries as EF-translatable `IQueryable` in the Business layer when repositories expose `IQueryable<T>`.
+- Avoid `ToList()` or `mapper.Map<...>(...)` inside queries; instead, project via joins and use AutoMapper `ProjectTo<T>` from a lightweight projection (e.g., TempMapper) or direct from entities.
+- Keep non-translatable formatting (dates/strings) out of DB-side projection; populate at API edge or after enumeration if needed.
+- Express left joins with group-join + `DefaultIfEmpty()` for proper `LEFT JOIN` translation.
+
+Conceptual example:
+```
+var temp = from p in Projects
+           join a in AuditResps on p.AuditRespId equals a.Id
+           join s in Statuses on p.StatusId equals s.Id
+           join c in Countries on p.CountryId equals c.Id into gc
+           from c in gc.DefaultIfEmpty()
+           select new ClientProjectViewProfile.TempMapper {
+             ClientProject = p,
+             ProjectAuditResponsibility = a,
+             ProjectStatus = s,
+             Country = c
+           };
+
+return temp.ProjectTo<ClientProjectViewModel>(mapper.ConfigurationProvider);
+```
+
+## 5) Mapping Rules (AutoMapper)
+- Co-locate profiles per feature under `.../Profile/`.
+- Map Entities -> ViewModels and SaveModels -> Entities; generate IDs where appropriate.
+
+```csharp
+// Entity -> ViewModel
+CreateMap<Client, ClientViewModel>();
+
+// CreateModel -> Entity with new ID
+CreateMap<ClientCreateModel, Client>()
+  .ForMember(d => d.Id, o => o.MapFrom(_ => Guid.NewGuid()));
+
+// UpdateModel -> Entity (ignore immutable fields)
+CreateMap<ClientUpdateModel, Client>();
+```
+
+## 6) Authentication Business (Example)
+- `UserLoginBusiness` validates credentials, generates JWT/refresh token, and writes audit.
+- Read token settings from configuration `Tokens:*`.
+- Hash verification with BCrypt; never log passwords.
+
+## 7) Validation
+- Validate business invariants (e.g., uniqueness within tenant) before writes.
+- Use FluentValidation for complex rules where beneficial; keep validators in Business to avoid API coupling.
+
+## 8) Naming & Structure
+- Feature folders: `Master/*`, `Tenant/*`, `Authentication/*`.
+- Interfaces end with `Business`; implementations mirror names without `I`.
+- AutoMapper profiles end with `Profile` and live under `.../Profile`.
+
+## 9) Performance
+- For large read paths, return `IQueryable<ViewModel>` from Business to allow OData to apply filters/paging in API.
+- Avoid multiple round-trips; prefer single query with joins/projections when possible.
+- For metadata lookup lists (e.g., Country), expose `Task<IQueryable<MetaDataViewModel>> GetAsync()` and project via AutoMapper.
+
+## 10) Testing Guidance
+- Unit test Business classes by mocking `IUnitOfWork` and repositories.
+- Validate logging (optional) and error paths; assert invariants.
+
+## 11) Additional Important Conventions
+- Time handling: prefer `DateTime.UtcNow` for security tokens/audits unless a strict local time requirement exists.
+- Async: keep methods fully async; avoid blocking calls.
+- Exceptions: throw specific exceptions for known error cases (e.g., AuthenticationException) and wrap unknowns with meaningful messages.
+- Security: never expose or log credentials, tokens, or secrets.
+
+## 12) Action Items
+- Ensure all Business methods use structured logging with method names.
+- Centralize mapping profiles per feature and keep them minimal.
+- Avoid leaking repository entities to API; expose ViewModels/DTOs.
+- Review authentication flows to ensure BCrypt usage and `Tokens:*` configuration are respected.
+
+## 13) References
+- Interfaces: `.../Logic/Interface/*.cs`
+- Implementations: `.../Logic/*.cs`
+- Profiles: `.../Profile/*.cs`
+- Auth: `Authentication/Logic/UserLoginBusiness.cs`
+- Metadata example: `Master/MetaData/Logic/CountryBusiness.cs`, `Master/MetaData/Logic/Interface/ICountryBusiness.cs`
+ - CI Workflow: `.github/workflows/code-review.yml` (build/test gates)
+ - Local Checks: `scripts/code-review-agent.ps1` (run before push)
+
+## 14) PR Review Checklist
+- Interfaces
+  - New services have `I*Business` interfaces under `.../Logic/Interface`.
+  - Implementations registered via API DI scanning (naming: ends with `Business`).
+- Logging & Errors
+  - Methods log start/end and errors with method names; no secrets logged.
+  - Exceptions are meaningful; authentication uses `AuthenticationException` for auth failures.
+- Data Access
+  - Uses `IUnitOfWork`; no direct `DbContext` in Business.
+  - Projections return ViewModels/DTOs; no entity leakage to API.
+- Mapping
+  - AutoMapper profiles exist per feature and handle generated IDs/ignored fields.
+  - No mapping logic in controllers; kept in profiles or Business.
+- Validation
+  - Critical invariants enforced in Business; simple DTO validation via FluentValidation where appropriate.
+- Performance
+  - Read paths return `IQueryable<ViewModel>` when OData filters are expected.
+  - Avoids N+1 by composing queries appropriately at repository level.
+- Security
+  - No secrets in logs; BCrypt used for password verification.
+  - Token settings are read from `Tokens:*` and not hardcoded.
+- Conventions
+  - Naming matches folder and suffix conventions (`Business`, `Profile`).
+  - Async/await used end-to-end; no blocking calls.
+  - XML summaries present on public Business classes and methods; parameters and return types documented where meaningful.
+
+## 14) File & Directory Map (Business Project)
+- Root: `KonaAI.Master/KonaAI.Master.Business/`
+  - `KonaAI.Master.Business.csproj` — targets net9.0, nullable enabled; references Model and Repository
+  - `Authentication/`
+    - `Logic/Interface/IUserLoginBusiness.cs` — auth business contract
+    - `Logic/UserLoginBusiness.cs` — login/auth implementation (BCrypt, Tokens:*)
+  - `Master/`
+    - `App/`
+      - `Logic/Interface/*Business.cs` — master app business contracts (e.g., `IClientBusiness`)
+      - `Logic/*Business.cs` — implementations (e.g., `ClientBusiness`)
+      - `Profile/*Profile.cs` — AutoMapper profiles (e.g., `ClientViewModelProfile`, `ClientCreateModelProfile`)
+    - `MetaData/`
+      - `Logic/Interface/*.cs` — metadata contracts (Navigation, Module, Country, etc.)
+      - `Logic/*.cs` — implementations (e.g., `NavigationBusiness`, `ModuleTypeBusiness`, `CountryBusiness`)
+      - `Profile/*.cs` — profiles (Country, ModuleSourceType, ModuleType, NavigationUserAction)
+    - `UserMetaData/` (placeholder folder as needed)
+  - `Tenant/`
+    - `Client/`
+      - `Logic/Interface/*.cs` — tenant client contracts (e.g., `IClientProjectBusiness`)
+      - `Logic/*.cs` — implementations (e.g., `ClientProjectBusiness`)
+      - `Profile/*.cs` — profiles (ClientUser, ClientProject)
+    - `UserMetaData/` — tenant user metadata logic and profiles
+  - `bin/`, `obj/` — build artifacts
+
+Notes:
+- Keep interfaces under `Logic/Interface`, implementations under `Logic`, and mapping under `Profile` for each feature area.
+- Ensure new features follow the same folder conventions and naming (`*Business`, `I*Business`, `*Profile`).
+
+## 15) Advanced Business Patterns (From Unit Test Implementation)
+
+### 15.1) ExecuteAsync Transaction Pattern
+When business logic requires transactional operations, use `unitOfWork.ExecuteAsync`:
+
+```csharp
+public async Task<int> CreateAsync(ClientRoleTypeCreateModel payload)
+{
+    await unitOfWork.ExecuteAsync(async () =>
+    {
+        var clientId = userContextService.UserContext!.ClientId; // Potential NullReferenceException
+        var entity = mapper.Map<ClientRoleType>(payload);
+        userContextService.SetDomainDefaults(entity, DataModes.Add);
+        await unitOfWork.ClientRoleTypes.AddAsync(entity);
+        result = await unitOfWork.SaveChangesAsync();
+    });
+    return result;
+}
+```
+
+### 15.2) Service Dependencies with Complex Logic
+For services like `ILicenseService` that perform encryption/decryption:
+
+```csharp
+public async Task<int> UpdateAsync(Guid rowId, ClientLicenseUpdateModel payload)
+{
+    var licenseEntity = await unitOfWork.ClientLicenses.GetByRowIdAsync(rowId);
+    if (licenseEntity == null)
+        throw new KeyNotFoundException($"License with id {rowId} not found.");
+    
+    var jsonPayloadStr = JsonSerializer.Serialize(payload);
+    var licenseInfo = licenseService.EncryptLicense(jsonPayloadStr, licenseEntity.ClientId.ToString());
+    licenseEntity.LicenseKey = licenseInfo.EncryptedLicense;
+    licenseEntity.PrivateKey = licenseInfo.EncryptedPrivateKey;
+    
+    await unitOfWork.ClientLicenses.UpdateAsync(licenseEntity);
+    return await unitOfWork.SaveChangesAsync();
+}
+```
+
+### 15.3) UserContext Null Safety
+Always check for null `UserContext` when accessing properties:
+
+```csharp
+// ❌ Risky: Direct property access without null check
+var clientId = userContextService.UserContext!.ClientId;
+
+// ✅ Better: Null check with meaningful exception
+if (userContextService.UserContext == null)
+    throw new InvalidOperationException("User context is not available");
+var clientId = userContextService.UserContext.ClientId;
+```
+
+### 15.4) AutoMapper ProjectTo with Complex Joins
+When using `ProjectTo<T>()` with complex joins, ensure proper AutoMapper configuration:
+
+```csharp
+public async Task<IQueryable<ClientProjectViewModel>> GetAsync()
+{
+    var temp = from cp in await unitOfWork.ClientProjects.GetAsync()
+               join ar in await unitOfWork.ProjectAuditResponsibilities.GetAsync() 
+                   on cp.AuditRespId equals ar.Id
+               // ... more joins
+               select new ClientProjectViewProfile.TempMapper { /* ... */ };
+    
+    return temp.ProjectTo<ClientProjectViewModel>(mapper.ConfigurationProvider);
+}
+```
+
+### 15.5) Exception Handling Patterns
+Ensure proper exception propagation and logging:
+
+```csharp
+public async Task<int> DeleteAsync(Guid rowId)
+{
+    const string methodName = $"{ClassName}: {nameof(DeleteAsync)}";
+    try
+    {
+        logger.LogInformation("{MethodName} - method execution started", methodName);
+        
+        await unitOfWork.ExecuteAsync(async () =>
+        {
+            var entity = await unitOfWork.ClientLicenses.GetByRowIdAsync(rowId);
+            if (entity == null)
+            {
+                logger.LogError("{MethodName} - No license info found with id: {Id}", methodName, rowId);
+                throw new KeyNotFoundException($"License info with id {rowId} not found.");
+            }
+            await unitOfWork.ClientLicenses.DeleteAsync(entity.RowId);
+            result = await unitOfWork.SaveChangesAsync();
+        });
+        
+        return result;
+    }
+    catch (Exception e)
+    {
+        logger.LogError("{MethodName} - Error: {Message}", methodName, e.Message);
+        throw;
+    }
+    finally
+    {
+        logger.LogInformation("{MethodName} - method execution completed", methodName);
+    }
+}
+```
+
+## 16) Change Propagation & Cross-References
+
+## 15) XML Documentation Standards
+
+### 15.1 Return Type Documentation
+```csharp
+// ✅ Good: Properly escaped generic types
+/// <returns>IQueryable&lt;ClientLicenseViewModel&gt;</returns>
+
+// ❌ Bad: Unescaped generic types
+/// <returns>IQueryable<ClientLicenseViewModel></returns>
+```
+
+### 15.2 Parameter Documentation
+```csharp
+// ✅ Good: Correct parameter references
+/// <param name="payload">The client user data to create.</param>
+/// <remarks>This method retrieves the client entity associated with the specified <paramref name="rowId"/> from the database.</remarks>
+
+// ❌ Bad: Incorrect parameter references
+/// <remarks>This method retrieves the client entity associated with the specified <paramref name="user"/> from the database.</remarks>
+```
+
+### 15.3 Constructor Documentation
+```csharp
+// ✅ Good: Accurate constructor documentation
+/// <summary>
+/// Validates the user credentials provided in the <paramref name="tokenFormRequest"/> and returns user login details if authentication is successful.
+/// </summary>
+
+// ❌ Bad: Invalid cref for parameters
+/// <summary>
+/// Validates the user credentials provided in the <see cref="tokenFormRequest"/> and returns user login details.
+/// </summary>
+```
+
+### 15.4 AutoMapper Profile Documentation
+```csharp
+// ✅ Good: Accurate type references
+/// <summary>
+/// AutoMapper profile for mapping from <see cref="Client"/> to <see cref="ClientUserViewModel"/>.
+/// </summary>
+
+// ❌ Bad: Incorrect type references
+/// <summary>
+/// AutoMapper profile for mapping from <see cref="Client"/> to <see cref="ClientViewModel"/>.
+/// </summary>
+```
+
+### 15.5 Interface Documentation
+```csharp
+// ✅ Good: Accurate return type references
+/// <returns>
+/// A task that represents the asynchronous operation. 
+/// The task result contains the <see cref="MetaDataViewModel"/>
+/// for the specified role type.
+/// </returns>
+
+// ❌ Bad: Incorrect return type references
+/// <returns>
+/// A task that represents the asynchronous operation. 
+/// The task result contains the <see cref="ClientRoleTypeViewModel"/>
+/// for the specified role type.
+/// </returns>
+```
+
+### 15.6 Constructor Standards
+```csharp
+// ✅ Good: Remove unused parameters
+public class NavigationBusiness(
+    ILogger<NavigationBusiness> logger,
+    IUnitOfWork unitOfWork,
+    IUserContextService userContextService) : INavigationBusiness
+
+// ❌ Bad: Keep unused parameters
+public class NavigationBusiness(
+    ILogger<NavigationBusiness> logger,
+    IMapper mapper,  // Unused parameter
+    IUnitOfWork unitOfWork,
+    IUserContextService userContextService) : INavigationBusiness
+```
+
+### 15.7 Async Method Standards
+```csharp
+// ✅ Good: Proper async implementation
+public async Task<int> DeleteAsync(Guid rowId)
+{
+    const string methodName = $"{ClassName}: {nameof(DeleteAsync)}";
+    try
+    {
+        logger.LogInformation("{MethodName} - method execution started", methodName);
+        _ = await unitOfWork.Clients.DeleteAsync(rowId);
+        return await unitOfWork.SaveChangesAsync();
+    }
+    catch (Exception e)
+    {
+        logger.LogError("{MethodName} - Error in execution with error - {EMessage}", methodName, e.Message);
+        throw;
+    }
+    finally
+    {
+        logger.LogInformation("{MethodName} - method execution completed", methodName);
+    }
+}
+
+// ❌ Bad: Sync-over-async anti-pattern
+public async Task<int> DeleteAsync(Guid rowId)
+{
+    _ = unitOfWork.Clients.DeleteAsync(rowId);
+    return unitOfWork.SaveChangesAsync().GetAwaiter().GetResult();
+}
+```
+
+### 15.8 Common Anti-Patterns to Avoid
+- **Unescaped Generic Types**: Don't use `<` and `>` in XML documentation
+- **Incorrect Parameter References**: Don't use wrong parameter names in paramref
+- **Unused Parameters**: Don't keep unused constructor parameters
+- **Sync-over-Async**: Don't use `.GetAwaiter().GetResult()` in async methods
+- **Invalid Type References**: Don't reference non-existent types in cref
+
+### 15.9 Best Practices
+- **Escape Generic Types**: Use `&lt;` and `&gt;` for generic types in XML docs
+- **Verify Parameter Names**: Ensure paramref names match actual parameters
+- **Remove Unused Parameters**: Clean up unused constructor parameters
+- **Use Proper Async**: Always use `await` in async methods
+- **Accurate Type References**: Only reference existing types in cref
+
+### 15.10 Validation Checklist
+- [ ] All generic types are properly escaped in XML documentation
+- [ ] All paramref attributes use correct parameter names
+- [ ] No unused constructor parameters
+- [ ] All async methods use proper await patterns
+- [ ] All type references in cref are valid
+- [ ] Build passes with `/warnaserror` flag
+- [ ] No XML documentation warnings
+- [ ] No CS9113 warnings (unused parameters)
+- [ ] No CS1998 warnings (async method lacks await)
+- [ ] No CS8620 warnings (nullability issues)
+
+**See Orchestrator-RuleBook.mdc for centralized change coordination across all layers.**
+
+This rulebook is automatically updated when:
+- Business interfaces, use-cases, or mapping patterns change
+- Authentication business logic or UoW patterns are modified
+- AutoMapper profiles or validation rules are updated
+- XML documentation standards or async patterns change
+- New business logic patterns require updated testing approaches
+
+## Master Metadata Business Patterns
+
+- Use `IUnitOfWork` repositories for master metadata (e.g., `ProjectAuditResponsibilities`, `ProjectDepartments`, `ProjectRiskAreas`, `ProjectUnits`, `Countries`).
+- Implement `GetAsync()` returning `IQueryable<MetaDataViewModel>` using AutoMapper projection in-memory after repository `GetAsync()` load:
+  - Pattern: `from e in await unitOfWork.<Repo>.GetAsync() select mapper.Map<MetaDataViewModel>(e);`
+- Logging: log start, completion, and errors with `ClassName: GetAsync` convention.
+- No tenant scoping in master metadata; tenant scoping applies only to client-specific metadata.
+- Ensure AutoMapper profiles exist mapping each master entity to `MetaDataViewModel`.
+
+## Tenant ClientProject Create Pattern (Master Lookups, No Client-Metadata Upserts)
+
+- Resolve foreign keys from master tables by `RowId` in Business:
+  - `ProjectAuditResponsibilities`, `ProjectRiskAreas`, with optional `Countries`, `ProjectUnits`, `ProjectDepartments`.
+- Do not upsert any client-specific metadata in this flow. Only the `ClientProject` entity is inserted.
+- Map `ClientProjectCreateModel` -> `ClientProject` and set resolved master FK IDs explicitly.
+- Set `ProjectStatusId` explicitly (by defaulting or resolving) before save.
+- Apply `userContextService.SetDomainDefaults(entity, DataModes.Add)` to set audit (`CreatedBy*`, `ModifiedBy*`) and `ClientId` from claims.
+- Commit via `IUnitOfWork.SaveChangesAsync()` once per use-case.
+- Validate uniqueness (e.g., project name within tenant) and existence of referenced master records; throw domain-appropriate exceptions (map to 400/409 at API).

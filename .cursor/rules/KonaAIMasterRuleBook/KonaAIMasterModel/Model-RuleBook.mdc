@@ -1,0 +1,201 @@
+---
+description: Model rules for KonaAI.Master.Model covering DTOs, view models, contracts, validation, and constants.
+globs: KonaAI.Master/KonaAI.Master.Model/***
+alwaysApply: false
+modifiedAt: 2025-09-26
+---
+# KonaAI.Master.Model RuleBook
+
+Contracts, DTOs, and view models shared across layers. No business logic.
+
+## 1) Structure & Boundaries
+- Layer provides shapes only: SaveModels, ViewModels, and common types.
+- No EF Core or business logic; keep classes POCO and serializable.
+- Organize by feature: `Master/*`, `Tenant/*`, `Authentication/*`, `Common/*`.
+
+## 2) Base Classes
+- `BaseViewModel`: exposes `RowId: Guid` for identity.
+- `BaseAuditViewModel`: extends `BaseViewModel` with `CreatedOn`, `CreatedBy`, `ModifiedOn`, `ModifiedBy`, `IsActive`.
+
+```csharp
+public class ClientUserViewModel : BaseAuditViewModel
+{
+  public string UserName { get; set; } = null!;
+  // ... other fields ...
+}
+```
+
+## 3) Constants & Constraints
+- Use `Common.Constants` for shared limits and formats
+  - `DbColumnLength` for string lengths (NameEmail, Password, Identifier, ...)
+  - `Constants.DefaultDateFormat` and common regex like `PhoneNumberRegex`
+- Do not hardcode lengths or regex patterns in validators/models; reference constants
+
+## 4) Validation in Models
+- Co-locate FluentValidation validators with models when simple and self-contained (e.g., `TokenRequestValidator`)
+- Prefer base validators for shared rules (e.g., `ClientUserBaseValidator<T> : AbstractValidator<T> where T : ClientUserBaseModel`)
+- Validation aims to guard DTO integrity; business invariants stay in Business layer
+
+### 4.1 Co-location pattern for small feature models
+- For tightly related SaveModels with shared base rules, it is acceptable to co-locate the base DTO and base validator in the same file as the concrete SaveModel, provided:
+  - The base types are still declared under their original namespace (e.g., `Tenant.Client.BaseModel`), and
+  - The concrete types remain under their feature namespace (e.g., `Tenant.Client.SaveModel`).
+- This is intended for small, focused features to improve discoverability while preserving namespaces and references.
+
+Example from `mdc:KonaAI.Master/KonaAI.Master.Model/Tenant/Client/SaveModel/ClientUserCreateModel.cs`:
+
+```csharp
+// Base types declared first (BaseModel namespace)
+namespace KonaAI.Master.Model.Tenant.Client.BaseModel;
+
+public abstract class ClientUserBaseModel { /* properties ... */ }
+
+public class ClientUserBaseValidator<T> : AbstractValidator<T>
+  where T : ClientUserBaseModel { /* shared rules ... */ }
+
+// Concrete SaveModel declared afterwards (SaveModel namespace)
+namespace KonaAI.Master.Model.Tenant.Client.SaveModel;
+
+public class ClientUserCreateModel : ClientUserBaseModel { }
+
+public class ClientUserCreateValidator : ClientUserBaseValidator<ClientUserCreateModel>
+{
+  public ClientUserCreateValidator()
+  {
+    RuleFor(x => x.UserName).NotEmpty();
+    // additional create-specific requirements...
+  }
+}
+```
+
+Notes:
+- Keep `using` directives at the top of the file and reference shared constraints from `Common.Constants` (e.g., `DbColumnLength`, `PhoneNumberRegex`).
+- Do not introduce business logic; validators should only enforce DTO-level format/length requirements.
+
+```csharp
+public class TokenRequestValidator : AbstractValidator<TokenFormRequest>
+{
+  public TokenRequestValidator()
+  {
+    RuleFor(x => x.UserName).NotNull();
+    RuleFor(x => x.Password).NotNull();
+    RuleFor(x => x.GrantType).NotNull().Must(gt => gt == "password");
+  }
+}
+```
+
+## 5) SaveModel vs ViewModel
+- SaveModel: input for create/update; may omit server-set fields; can include optional properties with nullables
+- ViewModel: output for reads; prefer explicit, flat shapes suitable for API responses; inherit from base classes when audit/identity is needed
+
+Guidance for tenant-scoped writes:
+- Do not include `ClientId` in SaveModels. `ClientId` flows from authenticated user claims via `IUserContextService` and is applied in Business/Repository.
+- For `ClientProjectCreateModel`, include master `RowId` references (AuditResponsibility, RiskArea; optional Country/Unit/Department). If `ProjectStatus` must be set by client, consider adding a `ProjectStatusRowId` field; otherwise default it in Business.
+
+```csharp
+// SaveModel example (create)
+public class ClientCreateModel { /* fields required to create */ }
+
+// ViewModel example (read)
+public class ClientViewModel : BaseViewModel { /* read-only projection */ }
+```
+
+## 6) Authentication Models
+- `TokenFormRequest`, `TokenResponse`, `UserLoginViewModel` define auth contracts
+- Never include secrets in view models; only pass required claims/roles
+
+## 7) Naming & Conventions
+- Suffixes: `CreateModel`, `UpdateModel` for SaveModels; `ViewModel` for read models
+- Avoid abbreviations; use PascalCase properties; enable nullable reference types
+- Keep property ordering stable and logical (identity, primary fields, optional fields)
+
+## 8) Serialization & Compatibility
+- Maintain backward compatibility: additive changes preferred; avoid breaking renames/removals
+- For breaking changes, version models under feature folders or add new shapes
+
+## 9) Mapping Guidance
+- Mapping implemented in Business AutoMapper profiles; models should not reference AutoMapper
+- Prefer explicit mappings in profiles for generated IDs or ignored fields
+
+## 10) Testing
+- Unit test validators with valid/invalid samples
+- Snapshot tests for serialization (optional) to prevent contract drift
+
+## 11) Action Items
+- Centralize string lengths and regex in `Common.Constants`
+- Ensure all public models have XML summaries for Swagger generation
+- Audit models that should inherit `BaseAuditViewModel` vs `BaseViewModel`
+
+## 12) References
+- Base models: `Common/BaseViewModel.cs`, `Common/BaseAuditViewModel.cs`
+- Constants: `Common/Constants/*.cs`
+- Auth models: `Authentication/*.cs`
+- Feature models: `Master/*`, `Tenant/*`
+
+## 13) PR-Review Checklist (Models)
+- XML summaries present for public models and properties (type and members). Use `<summary>`, `<remarks>`, and `<example>` when helpful.
+- No business logic in models (pure DTOs/ViewModels)
+- Validators co-located where appropriate; base DTO/validator co-location allowed per 4.1; use `Common.Constants` (no hardcoded lengths/regex)
+- Correct base class usage (`BaseViewModel` or `BaseAuditViewModel` as needed)
+- Naming follows conventions (`CreateModel`, `UpdateModel`, `ViewModel`)
+- Nullable reference types respected; optional fields are nullable
+- Backward compatibility considered (additive changes preferred)
+- No secrets or sensitive data included in view models
+- Serialization shape matches API needs (flat, explicit types)
+- Mappings covered in Business profiles (no AutoMapper references in Model)
+
+### XML Comments Guidance
+- Add `<summary>` on each public class and property. Keep descriptions concise and user-facing.
+- For DTOs used by Swagger, prefer documenting required/optional behavior and units where relevant.
+- Example:
+
+```csharp
+/// <summary>
+/// Represents a request to obtain an access token using the password grant.
+/// </summary>
+public class TokenFormRequest
+{
+  /// <summary>User name or email for authentication.</summary>
+  public string UserName { get; set; } = null!;
+
+  /// <summary>Clear-text password provided by the user.</summary>
+  public string Password { get; set; } = null!;
+}
+```
+
+## 13) File & Directory Map (Model Project)
+- Root: `KonaAI.Master/KonaAI.Master.Model/`
+  - `KonaAI.Master.Model.csproj` — targets net9.0, nullable enabled; includes FluentValidation
+  - `Common/`
+    - `BaseViewModel.cs` — base identity (`RowId`)
+    - `BaseAuditViewModel.cs` — audit fields (CreatedOn/By, ModifiedOn/By, IsActive)
+    - `Constants/`
+      - `Constants.cs` — date formats, regex (e.g., `PhoneNumberRegex`)
+      - `DbColumnLength.cs` — shared length limits
+    - `MetaDataViewModel.cs` — simple lookup model
+  - `Authentication/`
+    - `TokenFormRequest.cs` (+ `TokenRequestValidator`)
+    - `TokenResponse.cs`
+    - `UserLoginViewModel.cs`
+  - `Master/`
+    - `App/` — `*CreateModel.cs`, `*UpdateModel.cs`, `*ViewModel.cs`
+    - `MetaData/` — e.g., `NavigationViewModel.cs`
+    - `ViewModel/` — aggregated or specialized read shapes (if present)
+  - `Tenant/`
+    - `Client/`
+      - `SaveModel/` — e.g., `ClientUserCreateModel.cs`, `ClientUserUpdateModel.cs`, `ClientProjectCreateModel.cs`
+      - `ViewModel/` — e.g., `ClientUserViewModel.cs`, `ClientProjectViewModel.cs`
+  - `bin/`, `obj/` — build artifacts
+
+Notes:
+- Place validators next to their DTOs when they are DTO-centric (format/length). Put cross-entity/business rules in Business layer.
+- Prefer additive changes to DTOs; version shapes under feature folders if breaking changes are unavoidable.
+
+## 14) Change Propagation & Cross-References
+
+**See Orchestrator-RuleBook.mdc for centralized change coordination across all layers.**
+
+This rulebook is automatically updated when:
+- DTOs, ViewModels, or validation contracts change
+- Base classes or constants are modified
+- Serialization or compatibility requirements are updated

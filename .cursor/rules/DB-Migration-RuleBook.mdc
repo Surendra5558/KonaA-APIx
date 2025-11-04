@@ -1,0 +1,185 @@
+---
+description: Database migration rules for KonaAI.Master covering EF Core migrations, naming conventions, and best practices.
+globs: KonaAI.Master/KonaAI.Master.Repository/**/*
+alwaysApply: false
+modifiedAt: 2025-09-29
+---
+# DB Migration RuleBook
+
+
+
+Guidelines for database migrations in KonaAI.Master using EF Core, covering naming conventions, migration strategies, and best practices.
+
+
+## 1) Migration Naming Conventions
+- **Format**: `YYYYMMDDHHMMSS_DescriptiveName.cs`
+- **Examples**: 
+  - `20250126143000_AddClientProjectCountryTable.cs`
+  - `20250126143001_UpdateUserAuditFields.cs`
+  - `20250126143002_AddTenantIndexes.cs`
+- **Descriptive names** should clearly indicate the change
+- **Avoid generic names** like `InitialCreate`, `Update1`, `Fix`
+
+## 2) Migration Creation Process
+1. **Make entity changes** in `Configuration/*` or `Domain/*` files
+2. **Run migration command**: `dotnet ef migrations add DescriptiveName --project KonaAI.Master.Repository --startup-project KonaAI.Master.API`
+3. **Review generated migration** for accuracy and completeness
+4. **Test migration** on development database
+5. **Update database**: `dotnet ef database update --project KonaAI.Master.Repository --startup-project KonaAI.Master.API`
+
+## 3) Migration Content Guidelines
+
+### Entity Changes
+- **Add new entities**: Include table creation, indexes, constraints
+- **Modify existing entities**: Include column additions, modifications, deletions
+- **Remove entities**: Include table drops and constraint removals
+- **Always include audit fields**: `CreatedOn`, `CreatedBy`, `ModifiedOn`, `ModifiedBy`, `IsActive`
+- **Column order convention (BaseClientDomain)**: Ensure distinct, deterministic orders for audit fields:
+  - `Id(1)`, `RowId(2)`, `CreatedOn(4)`, `CreatedById(5)`, `CreatedBy(6)`,
+    `ModifiedOn(7)`, `ModifiedById(8)`, `ModifiedBy(9)`, `IsActive(10)`, `IsDeleted(11)`, `ClientId(12)`.
+  - Avoid duplicates between `ModifiedById` and `ModifiedBy`.
+
+### Index Management
+- **Add indexes** for frequently queried columns
+- **Include composite indexes** for multi-column queries
+- **Remove unused indexes** to improve performance
+- **Name indexes** descriptively: `IX_TableName_ColumnName`
+
+### Constraint Management
+- **Foreign key constraints** with proper naming
+- **Check constraints** for data validation
+- **Unique constraints** for business rules
+- **Default values** for audit fields
+
+## 4) Multi-Tenancy Considerations
+- **Global query filters** must be preserved in migrations
+- **Tenant-specific indexes** should include `ClientId` in composite indexes
+- **Cross-tenant data isolation** must be maintained
+- **Tenant context** should be considered in all data operations
+
+## 5) Data Migration Strategies
+- **Seed data migrations** for reference data
+- **Data transformation** for existing records
+- **Backup strategies** before destructive changes
+- **Rollback procedures** for failed migrations
+### Example: Seed ClientProjectCountry Lookup
+
+When adding seed rows for tenant-scoped metadata, prefer deterministic inserts with checks to avoid duplicates.
+
+```csharp
+protected override void Up(MigrationBuilder migrationBuilder)
+{
+    // Example pseudo-code: seed minimal lookup values
+    migrationBuilder.Sql(@"
+        IF NOT EXISTS (SELECT 1 FROM [ClientUserMetaData].[ClientProjectCountry] WHERE [RowId] = '00000000-0000-0000-0000-000000000001')
+        INSERT INTO [ClientUserMetaData].[ClientProjectCountry] ([RowId], [Name], [IsActive])
+        VALUES ('00000000-0000-0000-0000-000000000001', 'United States', 1);
+    ");
+}
+
+protected override void Down(MigrationBuilder migrationBuilder)
+{
+    migrationBuilder.Sql(@"
+        DELETE FROM [ClientUserMetaData].[ClientProjectCountry]
+        WHERE [RowId] = '00000000-0000-0000-0000-000000000001';
+    ");
+}
+```
+
+Reference recent migration: `KonaAI.Master.Repository/Migrations/20250930125117_AddClientProjectCountrySeed.cs`.
+
+## 6) Migration Testing
+- **Test on development database** before production
+- **Verify data integrity** after migration
+- **Check performance impact** of new indexes
+- **Validate constraint enforcement**
+
+## 7) Production Deployment
+- **Backup database** before migration
+- **Deploy during maintenance windows** for large changes
+- **Monitor migration progress** and performance
+- **Have rollback plan** ready
+
+## 8) Common Migration Patterns
+
+### Adding New Entity
+```csharp
+// In Configuration file
+public void Configure(EntityTypeBuilder<NewEntity> builder)
+{
+    builder.ToTable("NewEntities");
+    builder.HasKey(e => e.Id);
+    builder.Property(e => e.Name).HasMaxLength(255).IsRequired();
+    builder.Property(e => e.CreatedOn).HasDefaultValueSql("GETUTCDATE()");
+    builder.Property(e => e.IsActive).HasDefaultValue(true);
+    builder.HasIndex(e => e.Name).HasDatabaseName("IX_NewEntities_Name");
+}
+```
+
+### Modifying Existing Entity
+```csharp
+// Add new property
+builder.Property(e => e.NewField).HasMaxLength(100);
+
+// Modify existing property
+builder.Property(e => e.ExistingField).HasMaxLength(500); // Increased length
+
+// Add new index
+builder.HasIndex(e => e.NewField).HasDatabaseName("IX_Entities_NewField");
+```
+
+### Adding Foreign Key
+```csharp
+builder.HasOne(e => e.ParentEntity)
+       .WithMany(p => p.ChildEntities)
+       .HasForeignKey(e => e.ParentId)
+       .OnDelete(DeleteBehavior.Cascade);
+```
+
+### Table Rename Caution (ClientProjectCountry)
+- When renaming tables (e.g., `ClientUserMetaData.ClientProjectCountry` -> `ClientProjectCountries`), ensure:
+  - Schema is preserved (`ClientUserMetaData`)
+  - All references (EF configurations, DbSet names, and queries) are updated
+  - Provide a migration with `RenameTable` including schema args
+  - Validate queries after rename to avoid errors like `Invalid object name 'ClientProjectCountries'` when schema is omitted
+
+## 9) Migration File Structure
+- **Up method**: Contains changes to apply
+- **Down method**: Contains changes to rollback
+- **Seed data**: Include in Up method if needed
+- **Comments**: Document complex changes
+
+## 10) Best Practices
+- **One logical change per migration** (avoid multiple unrelated changes)
+- **Test migrations thoroughly** before production
+- **Keep migrations small** and focused
+- **Document complex changes** in migration comments
+- **Use transactions** for related changes
+- **Consider performance impact** of large migrations
+
+## 11) Troubleshooting Common Issues
+- **Migration conflicts**: Resolve by updating model snapshot
+- **Data loss warnings**: Review and address before applying
+- **Performance issues**: Optimize queries and indexes
+- **Constraint violations**: Check data integrity before migration
+
+## 12) CI/CD Integration
+- **Automated migration testing** in CI pipeline
+- **Migration validation** before deployment
+- **Database schema comparison** with expected state
+- **Rollback testing** in staging environment
+
+## 13) References
+- **EF Core Migrations**: `KonaAI.Master.Repository/Migrations/`
+- **Configuration**: `KonaAI.Master.Repository/Configuration/`
+- **Design-time Factory**: `KonaAI.Master.Repository/DesignTime/DefaultContextFactory.cs`
+- **Context**: `KonaAI.Master.Repository/DefaultContext.cs`
+
+## 14) Change Propagation & Cross-References
+
+**See Orchestrator-RuleBook.mdc for centralized change coordination across all layers.**
+
+This rulebook is automatically updated when:
+- Migration strategies or naming conventions change
+- EF Core patterns or database schema requirements are modified
+- CI/CD requirements or deployment procedures are updated

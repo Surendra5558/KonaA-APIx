@@ -1,0 +1,348 @@
+# Code Quality RuleBook
+
+**Comprehensive guidelines for maintaining high code quality across the KonaAI.Master solution.**
+
+## 1) Build Error Prevention
+
+### 1.1 XML Documentation Standards
+```csharp
+// ✅ Good: Proper XML documentation
+/// <summary>
+/// Retrieves all client role types.
+/// </summary>
+/// <returns>IQueryable&lt;ClientRoleTypeViewModel&gt;</returns>
+/// <param name="rowId">The unique identifier.</param>
+/// <exception cref="KeyNotFoundException">Thrown when entity is not found.</exception>
+
+// ❌ Bad: XML documentation errors
+/// <returns>IQueryable<ClientRoleTypeViewModel></returns>  // Unescaped generics
+/// <param name="source">The identifier.</param>  // Wrong parameter name
+/// <see cref="NonExistentType"/>  // Non-existent type reference
+```
+
+### 1.2 Cref Attribute Guidelines
+```csharp
+// ✅ Good: Valid cref references
+/// <summary>
+/// Repository for <see cref="ProjectAuditResponsibility"/> entities.
+/// </summary>
+
+// ✅ Good: Plain text for non-existent types
+/// <summary>
+/// Sets up relationships with LicenseType.
+/// </summary>
+
+// ❌ Bad: Invalid cref references
+/// <summary>
+/// Repository for <see cref="ClientProjectAuditResponsibility"/> entities.
+/// </summary>
+```
+
+## 2) Parameter Documentation Standards
+
+### 2.1 Parameter Name Accuracy
+```csharp
+// ✅ Good: Correct parameter names
+/// <param name="ids">The collection of numeric identifiers.</param>
+/// <param name="rowIds">The collection of GUID identifiers.</param>
+/// <param name="entities">The collection of entities to add.</param>
+
+// ❌ Bad: Incorrect parameter names
+/// <param name="source">The collection of identifiers.</param>  // Wrong parameter name
+```
+
+### 2.2 Parameter Reference Accuracy
+```csharp
+// ✅ Good: Correct paramref usage
+/// <exception cref="ArgumentNullException"><paramref name="ids" /> is <see langword="null" />.</exception>
+
+// ❌ Bad: Incorrect paramref usage
+/// <exception cref="ArgumentNullException"><paramref name="source" /> is <see langword="null" />.</exception>
+```
+
+## 3) Constructor Quality Standards
+
+### 3.1 Unused Parameter Handling
+```csharp
+// ✅ Good: Remove unused parameters
+public class NavigationBusiness(
+    ILogger<NavigationBusiness> logger,
+    IUnitOfWork unitOfWork,
+    IUserContextService userContextService) : INavigationBusiness
+
+// ❌ Bad: Keep unused parameters
+public class NavigationBusiness(
+    ILogger<NavigationBusiness> logger,
+    IMapper mapper,  // Unused parameter - causes CS9113
+    IUnitOfWork unitOfWork,
+    IUserContextService userContextService) : INavigationBusiness
+```
+
+### 3.2 Constructor Documentation
+```csharp
+// ✅ Good: Comprehensive constructor documentation
+/// <summary>
+/// Initializes a new instance of the NavigationBusiness class.
+/// </summary>
+/// <param name="logger">The logger instance.</param>
+/// <param name="unitOfWork">The unit of work instance.</param>
+/// <param name="userContextService">The user context service instance.</param>
+```
+
+## 4) Async Method Quality Standards
+
+### 4.1 Proper Async Implementation
+```csharp
+// ✅ Good: Proper async implementation
+public async Task<int> DeleteAsync(Guid rowId)
+{
+    const string methodName = $"{ClassName}: {nameof(DeleteAsync)}";
+    try
+    {
+        logger.LogInformation("{MethodName} - method execution started", methodName);
+        _ = await unitOfWork.Clients.DeleteAsync(rowId);
+        return await unitOfWork.SaveChangesAsync();
+    }
+    catch (Exception e)
+    {
+        logger.LogError("{MethodName} - Error in execution with error - {EMessage}", methodName, e.Message);
+        throw;
+    }
+    finally
+    {
+        logger.LogInformation("{MethodName} - method execution completed", methodName);
+    }
+}
+
+// ❌ Bad: Sync-over-async anti-pattern
+public async Task<int> DeleteAsync(Guid rowId)
+{
+    _ = unitOfWork.Clients.DeleteAsync(rowId);
+    return unitOfWork.SaveChangesAsync().GetAwaiter().GetResult();  // Causes CS1998
+}
+```
+
+### 4.2 Async Method Documentation
+```csharp
+// ✅ Good: Proper async method documentation
+/// <summary>
+/// Asynchronously deletes a client by row ID.
+/// </summary>
+/// <param name="rowId">The unique identifier of the client to delete.</param>
+/// <returns>A task representing the asynchronous operation. The task result contains the number of affected records.</returns>
+```
+
+## 5) Nullability Standards
+
+### 5.1 Null Reference Handling
+```csharp
+// ✅ Good: Proper null handling
+business.Setup(b => b.GetByRowIdAsync(rowId)).ReturnsAsync((MetaDataViewModel)null!);
+
+// ❌ Bad: Nullability warnings
+business.Setup(b => b.GetByRowIdAsync(rowId)).ReturnsAsync((MetaDataViewModel?)null);  // Causes CS8620
+```
+
+### 5.2 Nullable Reference Types
+```csharp
+// ✅ Good: Proper nullable reference usage
+public string? Description { get; set; }  // Optional property
+public string Name { get; set; } = string.Empty;  // Required property with default
+
+// ❌ Bad: Inconsistent nullable usage
+public string Description { get; set; }  // Should be nullable if optional
+```
+
+## 6) Whitespace Formatting Standards
+
+### 6.1 Indentation Consistency
+```csharp
+// ✅ Good: Consistent 4-space indentation
+public class ExampleClass
+{
+    public void ExampleMethod()
+    {
+        if (condition)
+        {
+            // Code here
+        }
+    }
+}
+
+// ❌ Bad: Mixed tabs and spaces
+public class ExampleClass
+{
+	public void ExampleMethod()
+    {
+        if (condition)
+		{
+            // Code here
+        }
+    }
+}
+```
+
+### 6.2 Line Break Standards
+```csharp
+// ✅ Good: Proper line breaks after namespace
+namespace KonaAI.Master.Repository.Configuration.Tenant.Client;
+
+/// <summary>
+/// Class documentation here.
+/// </summary>
+
+// ❌ Bad: Missing line breaks after namespace
+namespace KonaAI.Master.Repository.Configuration.Tenant.Client;
+/// <summary>
+/// Class documentation here.
+/// </summary>
+```
+
+## 7) Common Anti-Patterns to Avoid
+
+### ❌ Don't Do These
+- **Invalid Cref References**: Don't reference types that don't exist
+- **Incorrect Parameter Names**: Don't use wrong parameter names in paramref
+- **Unused Parameters**: Don't keep unused constructor parameters
+- **Sync-over-Async**: Don't use `.GetAwaiter().GetResult()` in async methods
+- **Poor Whitespace**: Don't use inconsistent indentation or spacing
+- **Unescaped Generics**: Don't use `<` and `>` in XML documentation
+
+## 8) Best Practices
+
+### ✅ Do These
+- **Verify Type Existence**: Always verify that cref references point to existing types
+- **Use Plain Text**: Use plain text instead of cref for non-existent types
+- **Escape Generic Types**: Use `&lt;` and `&gt;` for generic types in XML docs
+- **Remove Unused Parameters**: Clean up unused constructor parameters
+- **Use Proper Async**: Always use `await` in async methods
+- **Consistent Formatting**: Maintain consistent whitespace formatting
+
+## 9) Validation Checklist
+
+### 9.1 Before Committing
+- [ ] All cref attributes reference existing types
+- [ ] All paramref attributes use correct parameter names
+- [ ] No unused constructor parameters
+- [ ] All async methods use proper await patterns
+- [ ] All generic types are properly escaped in XML documentation
+- [ ] Consistent whitespace formatting throughout
+- [ ] No trailing spaces or mixed indentation
+
+### 9.2 Build Validation
+- [ ] Build passes with `/warnaserror` flag
+- [ ] No XML documentation warnings (CS1734, CS1572, CS1573, CS1574)
+- [ ] No unused parameter warnings (CS9113)
+- [ ] No async method warnings (CS1998)
+- [ ] No nullability warnings (CS8620)
+- [ ] No whitespace formatting errors
+- [ ] All cref attributes resolve correctly
+
+## 10) Common Issues and Solutions
+
+### 10.1 XML Documentation Errors
+**Issue**: `XML comment has cref attribute 'TypeName' that could not be resolved`
+**Solution**: 
+- Verify the type exists in the current assembly
+- Use plain text instead of cref for non-existent types
+- Check namespace imports
+
+**Issue**: `XML comment has badly formed XML`
+**Solution**: 
+- Replace `<` with `&lt;`
+- Replace `>` with `&gt;`
+- Example: `IQueryable<ViewModel>` → `IQueryable&lt;ViewModel&gt;`
+
+**Issue**: `XML comment has a paramref tag for 'paramName', but there is no parameter by that name`
+**Solution**:
+- Verify parameter names in method signature
+- Update paramref to use correct parameter names
+- Check for typos in parameter names
+
+### 10.2 Code Quality Issues
+**Issue**: `Parameter 'paramName' is unread`
+**Solution**:
+- Remove unused parameters from constructor
+- Update all constructor calls to match new signature
+- Update unit tests to match new constructor
+
+**Issue**: `async method lacks 'await' operators`
+**Solution**:
+- Replace `.GetAwaiter().GetResult()` with `await`
+- Ensure all async operations use proper await pattern
+- Remove unnecessary async if no await operations
+
+**Issue**: `Nullability of reference types`
+**Solution**:
+- Use proper null handling with `!` operator
+- Ensure nullable reference types are used correctly
+- Check for null reference warnings
+
+### 10.3 Whitespace Formatting Issues
+**Issue**: `Fix whitespace formatting. Replace X characters with '\s\s\s\s'`
+**Solution**: 
+- Convert all tabs to 4 spaces
+- Use consistent indentation throughout the file
+- Check for mixed tabs and spaces
+
+**Issue**: `Fix whitespace formatting. Insert '\s'`
+**Solution**:
+- Add spaces around operators (`if (condition)` not `if(condition)`)
+- Add spaces around assignment operators (`_ = await` not `_= await`)
+- Add spaces around method parameters
+
+**Issue**: `Fix whitespace formatting. Replace X characters with '\r\n'`
+**Solution**:
+- Add proper line breaks after namespace declarations
+- Ensure consistent line endings
+- Remove extra spaces and align comments properly
+
+## 11) Automated Quality Checks
+
+### 11.1 Build Configuration
+```xml
+<!-- Enable all warnings as errors -->
+<PropertyGroup>
+  <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  <WarningsAsErrors />
+</PropertyGroup>
+```
+
+### 11.2 EditorConfig Settings
+```ini
+# EditorConfig for consistent formatting
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# XML documentation
+dotnet_diagnostic.CS1572.severity = error
+dotnet_diagnostic.CS1573.severity = error
+dotnet_diagnostic.CS1574.severity = error
+dotnet_diagnostic.CS1734.severity = error
+```
+
+### 11.3 Pre-commit Hooks
+```bash
+#!/bin/sh
+# Check for formatting issues
+dotnet format --verify-no-changes
+if [ $? -ne 0 ]; then
+    echo "Code formatting issues detected. Run 'dotnet format' to fix."
+    exit 1
+fi
+
+# Check for build errors
+dotnet build --verbosity quiet
+if [ $? -ne 0 ]; then
+    echo "Build errors detected. Fix before committing."
+    exit 1
+fi
+```
+
+This rulebook ensures consistent, maintainable, and high-quality code across the KonaAI.Master solution.

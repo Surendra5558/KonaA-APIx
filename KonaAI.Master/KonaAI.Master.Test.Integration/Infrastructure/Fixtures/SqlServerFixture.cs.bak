@@ -1,0 +1,263 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Testcontainers.MsSql;
+using Testcontainers;
+using KonaAI.Master.Repository;
+using KonaAI.Master.Test.Integration.Infrastructure.TestData.Seeders;
+using KonaAI.Master.Test.Integration.Infrastructure;
+
+namespace KonaAI.Master.Test.Integration.Infrastructure.Fixtures;
+
+/// <summary>
+/// SQL Server fixture using Testcontainers for integration testing with fallback to in-memory database.
+/// Provides real SQL Server database when Docker is available, falls back to in-memory when not.
+/// </summary>
+public class SqlServerFixture : IAsyncLifetime
+{
+    private MsSqlContainer? _container;
+    private bool _disposed = false;
+    private bool _useTestcontainers = false;
+
+    public string ConnectionString { get; private set; } = string.Empty;
+    public string DatabaseName { get; private set; } = string.Empty;
+    public bool IsUsingTestcontainers => _useTestcontainers;
+
+    public async Task InitializeAsync()
+    {
+        // Check if Docker is available first
+        if (IsDockerAvailable())
+        {
+            try
+            {
+                // Try to use Testcontainers if Docker is available
+                await InitializeWithTestcontainers();
+                _useTestcontainers = true;
+                Console.WriteLine("Using SQL Server (Testcontainers) for integration tests.");
+            }
+            catch (Exception ex)
+            {
+                // Fall back to in-memory database
+                Console.WriteLine($"Testcontainers not available: {ex.Message}");
+                Console.WriteLine("Falling back to in-memory database for local development.");
+                await InitializeWithInMemory();
+                _useTestcontainers = false;
+            }
+        }
+        else
+        {
+            Console.WriteLine("Docker not available. Using in-memory database for local development.");
+            await InitializeWithInMemory();
+            _useTestcontainers = false;
+        }
+    }
+
+    private async Task InitializeWithTestcontainers()
+    {
+        // Create SQL Server container
+        _container = new MsSqlBuilder()
+            .WithImage("mcr.microsoft.com/mssql/server:2022-latest")
+            .WithPassword("Test@123456")
+            .WithEnvironment("ACCEPT_EULA", "Y")
+            .WithEnvironment("MSSQL_SA_PASSWORD", "Test@123456")
+            .WithPortBinding(1433, true)
+            .Build();
+
+        await _container.StartAsync();
+        
+        ConnectionString = _container.GetConnectionString();
+        DatabaseName = "KonaAI_Test_" + Guid.NewGuid().ToString("N")[..8];
+        
+        // Apply migrations to create schema
+        await ApplyMigrationsAsync();
+    }
+
+    private async Task InitializeWithInMemory()
+    {
+        // Use in-memory database for local development
+        ConnectionString = "Data Source=:memory:";
+        DatabaseName = "KonaAI_Test_InMemory_" + Guid.NewGuid().ToString("N")[..8];
+        
+        // No migrations needed for in-memory database
+        Console.WriteLine("Using in-memory database for local development.");
+    }
+
+    public async Task DisposeAsync()
+    {
+        if (_disposed) return;
+        
+        if (_container != null)
+        {
+            await _container.DisposeAsync();
+        }
+        
+        _disposed = true;
+    }
+
+        /// <summary>
+        /// Creates a new DbContext with the test database connection.
+        /// </summary>
+    public TestDbContext CreateContext()
+    {
+        var optionsBuilder = new DbContextOptionsBuilder<TestDbContext>();
+
+        if (_useTestcontainers)
+        {
+            // Use real SQL Server
+            optionsBuilder.UseSqlServer(ConnectionString, sqlOptions =>
+            {
+                sqlOptions.EnableRetryOnFailure(3);
+                sqlOptions.CommandTimeout(30);
+            });
+        }
+        else
+        {
+            // Use in-memory database
+            optionsBuilder.UseInMemoryDatabase(DatabaseName);
+        }
+
+        optionsBuilder.EnableSensitiveDataLogging()
+                      .EnableServiceProviderCaching(false);
+
+        return new TestDbContext(optionsBuilder.Options, new TestUserContextService());
+    }
+
+    /// <summary>
+    /// Creates a scoped service provider for dependency injection testing.
+    /// </summary>
+    public IServiceProvider CreateServiceProvider()
+    {
+        var services = new ServiceCollection();
+        
+        // Add DbContext
+        if (_useTestcontainers)
+        {
+            services.AddDbContext<DefaultContext>(options =>
+                options.UseSqlServer(ConnectionString));
+        }
+        else
+        {
+            services.AddDbContext<DefaultContext>(options =>
+                options.UseInMemoryDatabase(DatabaseName));
+        }
+        
+        // Add test services
+        services.AddScoped<TestUserContextService>();
+        
+        return services.BuildServiceProvider();
+    }
+
+    /// <summary>
+    /// Executes a database command directly.
+    /// </summary>
+    public async Task<int> ExecuteSqlAsync(string sql, params object[] parameters)
+    {
+        if (!_useTestcontainers)
+        {
+            // In-memory database doesn't support raw SQL
+            return 0;
+        }
+
+        using var context = CreateContext();
+        return await context.Database.ExecuteSqlRawAsync(sql, parameters);
+    }
+
+    /// <summary>
+    /// Clears all data from the test database.
+    /// </summary>
+    public async Task ClearDatabaseAsync()
+    {
+        using var context = CreateContext();
+        
+        if (_useTestcontainers)
+        {
+            // Disable foreign key constraints temporarily
+            await context.Database.ExecuteSqlRawAsync("EXEC sp_MSforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT all'");
+            
+            // Get all table names and delete data
+            var tableNames = await context.Database.SqlQueryRaw<string>(
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'")
+                .ToListAsync();
+            
+            foreach (var tableName in tableNames)
+            {
+                await context.Database.ExecuteSqlRawAsync($"DELETE FROM [{tableName}]");
+            }
+            
+            // Re-enable foreign key constraints
+            await context.Database.ExecuteSqlRawAsync("EXEC sp_MSforeachtable 'ALTER TABLE ? WITH CHECK CHECK CONSTRAINT all'");
+        }
+        else
+        {
+            // For in-memory database, recreate the database
+            await context.Database.EnsureDeletedAsync();
+            await context.Database.EnsureCreatedAsync();
+        }
+    }
+
+    /// <summary>
+    /// Seeds the database with test data.
+    /// </summary>
+    public async Task SeedTestDataAsync()
+    {
+        using var context = CreateContext();
+        var seeder = new TestDataSeeder();
+        await seeder.SeedAsync(context);
+    }
+
+    private async Task ApplyMigrationsAsync()
+    {
+        using var context = CreateContext();
+        await context.Database.EnsureCreatedAsync();
+    }
+
+    /// <summary>
+    /// Gets the database type being used for testing.
+    /// </summary>
+    public string GetDatabaseType()
+    {
+        return _useTestcontainers ? "SQL Server (Testcontainers)" : "In-Memory Database";
+    }
+
+    /// <summary>
+    /// Checks if Docker is available on the system.
+    /// </summary>
+    public static bool IsDockerAvailable()
+    {
+        try
+        {
+            var process = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "docker",
+                    Arguments = "version",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            
+            process.Start();
+            process.WaitForExit(5000); // Wait up to 5 seconds
+            
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+
+/// <summary>
+/// Collection definition for SQL Server tests to ensure proper cleanup.
+/// </summary>
+[CollectionDefinition("SqlServerCollection")]
+public class SqlServerCollection : ICollectionFixture<SqlServerFixture>
+{
+    // This class has no code, and is never created. Its purpose is simply
+    // to be the place to apply [CollectionDefinition] and all the
+    // ICollectionFixture<> interfaces.
+}

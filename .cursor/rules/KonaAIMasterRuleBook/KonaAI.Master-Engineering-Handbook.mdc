@@ -1,0 +1,223 @@
+---
+description: Engineering handbook for KonaAI.Master covering architecture, standards, and process.
+globs: **/*
+alwaysApply: true
+modifiedAt: 2025-09-26
+---
+# KonaAI Master Rule Book
+
+Authoritative conventions and guidelines for the `KonaAI.Master` solution.
+
+## Structure
+- API: `KonaAI.Master.API`
+- Business: `KonaAI.Master.Business`
+- Repository: `KonaAI.Master.Repository`
+- Model: `KonaAI.Master.Model`
+- Tests: `KonaAI.Master.Test.*`
+
+## Coding Standards
+- PascalCase: classes/methods; camelCase: locals/params; UPPER_SNAKE_CASE: constants
+- Descriptive names; avoid abbreviations
+- Prefer early returns; shallow nesting
+- Enable nullable references; use async/await for I/O
+
+## API Guidelines
+- Thin controllers; delegate to Business
+- RESTful routes; version under `/api/v1`
+- Proper status codes; ProblemDetails for errors
+- JWT auth; role/scope-based policies
+- Keep Swagger docs current
+
+## Data & Persistence
+- EF Core configs via `IEntityTypeConfiguration<>`
+- Deterministic migrations; snapshot in sync
+- Use repositories + UnitOfWork; project to DTOs; `AsNoTracking` for reads
+
+## Validation & Errors
+- Validate at API edge; enforce invariants in Business
+- Consistent error mapping and logging with correlation context
+
+## Security
+- Defense-in-depth; least-privilege DB; no secrets in repo
+- Input sanitization; avoid dynamic SQL
+
+## Configuration
+- `appsettings.*` with environment overrides; bind via `IOptions<T>`
+- Centralized feature flags
+
+## Observability
+- Structured logging (`CorrelationId`, `UserId`, `TenantId`)
+- Metrics for key operations; traces for cross-service calls
+
+## Performance
+- Avoid N+1; batch includes
+- Cache idempotent reads with TTL
+- Paginate list endpoints
+
+## Testing
+- Unit: Business with mocks
+- Integration: Repository/EF with test DB
+- API: WebApplicationFactory with middleware
+
+## Process
+- Branches: `main`, `develop`, `feature/*`
+- PRs: review, green CI, docs updated
+
+## Contribution Checklist
+- Build/tests pass; analyzers clean
+- Contracts/Swagger updated
+- Rule Book updated if conventions change
+
+---
+
+## Architecture Pattern
+- Approach: Layered/Clean Architecture with light DDD.
+  - API (presentation) depends on Business (application) which depends on Repository (infrastructure). `Model` provides shared contracts only.
+  - Dependency rule: Inner layers must not depend on outer layers.
+- Request Flow:
+  1. Controller accepts request, validates input
+  2. Delegates to Business service/use-case
+  3. Business orchestrates domain rules and calls repositories via abstractions
+  4. Repository executes EF Core operations and maps to DTOs/entities
+  5. Response mapped to API view models and returned
+- Cross-Cutting Concerns:
+  - Logging, validation, caching, and authorization are implemented via middleware/filters and injected services.
+  - Use policies/attributes for authorization; avoid scattering imperative checks.
+- Optional CQRS:
+  - For complex domains or high-read scenarios, split read models (queries, projections) from write models (commands, invariants).
+  - Reads should be optimized projections; writes enforce invariants and transactional consistency.
+- Multi-Tenancy:
+  - Resolve `TenantId` and `UserId` via a `UserContextService` at request start and flow them through Business and Repository.
+  - All data access must be tenant-scoped by default; explicit opt-out requires justification and code review.
+- Transactions:
+  - Use UnitOfWork to bound write transactions per request/use-case. Avoid long-lived transactions across network calls.
+- Caching:
+  - Cache only idempotent queries. Define cache keys including `TenantId` and relevant parameters.
+  - Invalidate on writes impacting cached resources.
+- API Versioning & Compatibility:
+  - Introduce breaking changes behind a new version (`/api/v2`). Maintain previous versions until clients migrate.
+- Error Contract:
+  - Use RFC7807 ProblemDetails fields: `type`, `title`, `status`, `traceId`, and an `errors` bag for validation issues.
+- Observability Conventions:
+  - Correlation: accept `X-Correlation-Id` header; generate if missing; include in logs and responses.
+  - Emit timing metrics for critical operations (auth, DB, external calls).
+- Configuration & Secrets:
+  - Bind options via `IOptions<T>`; validate options on startup. Secrets are sourced from user-secrets/local env in dev and a vault in higher environments.
+
+## Folder Guidance (per project)
+- API:
+  - `Controllers/<Area>`
+  - `Extensions` for DI/Auth/Swagger wiring
+  - `Model` only for API-specific shapes (delegate shared DTOs to `Model` project)
+- Business:
+  - `Master/*`, `Tenant/*` feature folders; `Authentication/*` etc.
+  - Interfaces under `Logic/Interface` or alongside concrete types
+- Repository:
+  - `Domain/*` entities, `Configuration/*` mappings, `DataAccess/*` queries, `Migrations/*`
+  - Common infra (UoW, repositories, constants, extensions)
+- Model:
+  - Contracts/DTOs/ViewModels organized by feature; avoid business logic here
+  - Small features may co-locate base DTOs/validators with concrete SaveModels in the same file to improve discoverability, while preserving original namespaces. See Model RuleBook §4.1.
+
+## ADRs (Architecture Decision Records)
+- For significant choices (e.g., adopting CQRS, changing auth flow), add an ADR under `RuleBook/adr/` with context, decision, and consequences.
+
+---
+
+## Detected Implementation Details (from current code)
+- Logging:
+  - Serilog is configured via `UseSerilog` to read from configuration.
+- Compression & CORS:
+  - Response compression is enabled (Brotli) for JSON, text, JS, SVG; CORS policy `AllowAllOrigins` allows any origin/method/header.
+- OData:
+  - Controllers inherit from `ODataController` and commonly use `[EnableQuery]` for GETs.
+  - Route components are registered at `v1` using a generated EDM model (`EdmModelBuilder.GetModels()`), with select/filter/orderby/expand/count enabled.
+  - Set `SetMaxTop(100)`; code also shows `.EnableQueryFeatures(maxTopValue: 2)` — ensure consistency (recommend removing the smaller limit or aligning values).
+- Swagger/OpenAPI:
+  - Swagger is configured with camel-case params, `CustomSchemaIds` using full type names, and a Bearer JWT security scheme set as required by default.
+- Authentication & Authorization:
+  - JWT Bearer auth is configured using `Tokens:Issuer|Audience|Key` from configuration; default scheme is Bearer.
+  - A `PolicyScheme` named `DefaultScheme` forwards to Bearer; default authorization policy requires authenticated users.
+- Dependency Injection:
+  - `AddDependencyInjection` registers AutoMapper profiles from Business, fluent validators, `IHttpContextAccessor`, `IUnitOfWork`, `IUserContextService`, and business services (by scanning `Business` and `Repository` assemblies for types ending with `Repository` or `Business`).
+- DbContext & SQL Server:
+  - `DefaultContext` is registered with SQL Server, retry on failure (1 retry up to 10s), and migrations assembly set to the repository assembly.
+  - `DefaultContext` reads connection string from `appsettings.json` in `OnConfiguring` and applies configurations from the executing assembly.
+- Multi-Tenancy & User Context:
+  - `UserContextService` extracts claims (`Sid`, `Name`, `email`, `RoleId`, `Role`, `ClientId`, `Client`) into a `UserContext`.
+  - It bypasses context extraction for paths containing `Login`.
+  - `DefaultContext` receives `IUserContextService` and sets `_clientId`; applies a global query filter for entities deriving from `BaseClientDomain` to scope by `ClientId`.
+  - A design-time `DefaultContextFactory` loads API `appsettings.json` to create the context with a stubbed `IUserContextService`.
+- Controllers:
+  - Use constructor injection for business interfaces and validators; typical GET endpoints are annotated with response types and try/catch with logging.
+
+## Action Items (Team Conventions to Enforce)
+- Align OData max top limit (choose one: `EnableQueryFeatures(maxTopValue: X)` or `SetMaxTop(Y)`).
+- Ensure all data-modifying endpoints are protected with `[Authorize]` and proper policies.
+- Standardize error responses to ProblemDetails across all controllers.
+- Ensure `UserContextService` behavior for unauthenticated paths is explicit (consider a more robust path match or attribute to skip context during auth endpoints only).
+
+---
+
+## Cursor Rules Governance
+- Rule files live in `.cursor/rules/` at repository root. Do not place rule files elsewhere.
+- Filenames use kebab-case and `.mdc` extension, e.g., `typescript-style.mdc`.
+- Each rule file must start with front matter:
+  - `description`: short purpose
+  - `globs`: optional path pattern for rule scope
+  - `alwaysApply`: `true|false` to enforce even without matches
+- Rule body structure:
+  - Title, rationale, step-by-step guidance
+  - Good and bad code examples
+  - References to project files using `mdc:path/to/file.ext`
+
+## Rule Improvement Triggers & Process
+- Triggers to add/modify rules:
+  - New patterns in 3+ files; repeated review feedback; common bugs; new libraries; emerging best practices
+- Improvement process:
+  - Compare new code to existing rules; identify gaps and edge cases
+  - Cross-reference external docs and related rules
+  - Monitor tests/coverage and error patterns
+- Quality checks for rules:
+  - Actionable, specific, and focused on one concern
+  - Examples taken from actual code
+  - Up-to-date references; consistent formatting
+
+## Rule Categories & Organization
+- Categories: Code Style, Architecture, Documentation, Tools, Meta
+- Keep `cursor-rules.mdc` and `self-improve.mdc` under `.cursor/rules/` as meta rules
+- Provide directory index in `.cursor/rules/` and cross-link related rules
+
+## Rule Creation Checklist
+- Placed in `.cursor/rules/`
+- Kebab-case filename with `.mdc`
+- Proper metadata front matter
+- Clear title and sections
+- Good and bad examples included
+- References to relevant project files
+- Consistent formatting
+
+## Rule Maintenance & Deprecation
+- Review regularly alongside code changes and refactors
+- Update examples and cross-references
+- Mark outdated rules deprecated; document migrations and update references
+- Remove rules that no longer apply and record change in changelog/ADR
+
+## Cross-References & Change Propagation
+
+**See Orchestrator-RuleBook.mdc for centralized change coordination across all layers.**
+
+This handbook is automatically updated when:
+- Architecture patterns or overall conventions change
+- Cross-cutting concerns (logging, security, performance) are modified
+- New technologies or frameworks are adopted
+- Process or governance rules are updated
+
+## Layer RuleBooks
+- API: `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterAPI/API-RuleBook.mdc`
+- Business: `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterBusiness/Business-RuleBook.mdc`
+- Repository: `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterRepository/Repository-RuleBook.mdc`
+- Model: `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterModel/Model-RuleBook.mdc`
+- Tests (Unit): `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterTests/TestUnit-RuleBook.mdc`
+- Tests (Integration): `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterTests/TestIntegration-RuleBook.mdc`
+- **Orchestrator**: `.cursor/rules/KonaAIMasterRuleBook/Orchestrator-RuleBook.mdc`

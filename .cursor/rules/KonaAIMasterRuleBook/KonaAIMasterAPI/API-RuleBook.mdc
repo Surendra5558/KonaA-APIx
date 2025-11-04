@@ -1,0 +1,506 @@
+---
+description: API layer rules for KonaAI.Master.API covering controllers, routing, auth, docs, and cross-cutting.
+globs: KonaAI.Master/KonaAI.Master.API/**/*
+alwaysApply: false
+modifiedAt: 2025-10-15
+---
+# KonaAI.Master.API RuleBook
+
+Authoritative rules for the API layer: routing, controllers, authentication, OData, Swagger, validation, errors, observability, and configuration. Aligned to the engineering handbook and actual implementation.
+
+## 1. Architecture & Request Flow
+1. Request enters ASP.NET Core pipeline (compression, CORS)
+2. Authentication (JWT) establishes principal
+3. Controller (thin) validates input and delegates to Business
+4. Business executes use-case, calls Repository via abstractions
+5. Repository (EF Core) applies tenant scoping and returns DTOs/IQueryable for server-side projections
+6. API maps responses and returns ProblemDetails on errors
+
+## 2. Service Registration (Program.cs)
+- Compression: enable Brotli for JSON/text assets
+- CORS: policy `AllowAllOrigins` with any origin/method/header
+- OData: route prefix `v1`, generated EDM via `ODataEdmModelBuilder.GetModels()`
+  - IMPORTANT: Do not configure both `.EnableQueryFeatures(maxTopValue)` and `.SetMaxTop(X)` with conflicting values. Current code sets `EnableQueryFeatures(maxTopValue: 2)` and `SetMaxTop(100)` in `Program.cs`. Align to a single max-top value (recommend 100) and remove the other for consistency.
+- DbContext: SQL Server with retry; migrations assembly set to repository
+- DI: `AddDependencyInjection()` wires AutoMapper, validators, UoW, `IUserContextService`, and Business/Repository scans
+- Swagger: Bearer scheme, camel-case parameters, full name schema IDs
+- Auth: `AddCustomAuthentication(builder.Configuration)`
+
+## 3. Authentication & Authorization
+- JWT Bearer is the default scheme
+- TokenValidationParameters: validate issuer, audience, lifetime, signing key from `Tokens:*`
+- Default authorization policy requires authenticated users
+- Prefer attribute-based authorization
+  - Data-modifying actions must be `[Authorize]` with policy/role constraints when needed
+- Scheme forwarding: a policy scheme named `DefaultScheme` forwards to Bearer; do not introduce alternative schemes unless required and documented
+
+### 3.1 Authorization Attribute Patterns (Finalized)
+- Controllers may secure endpoints via either:
+  - Class-level `[Authorize]` to cover all actions in the controller, or
+  - Method-level `[Authorize(Policy = "...")]` when fine-grained policies are required.
+- Do not mix redundant method-level attributes when class-level suffices for simple read-only metadata controllers.
+- Login endpoints must remain public: `LoginController` MUST NOT have class-level `[Authorize]`.
+- Example method-level policy usage (Client-specific):
+  - `ClientUserController`: uses method-level policies for View/Add/Edit/Delete
+  - `ClientLicenseController`: uses method-level policies, no class-level `[Authorize]`
+
+```csharp
+// Class-level auth (typical for read-only metadata)
+[Authorize]
+public class CountryController : ODataController { /* GET actions */ }
+
+// Method-level policy (fine-grained control)
+[HttpGet]
+[Authorize(Policy = "Permission : Navigation = License; Action = View")]
+public async Task<IActionResult> GetAsync() { /* ... */ }
+
+// Public login controller (no [Authorize] at class level)
+public class LoginController : ODataController { /* ... */ }
+```
+
+```csharp
+// ✅ Good
+[Authorize]
+public class ClientController : ODataController { }
+
+// ❌ Avoid
+public class ClientController : ODataController { /* write actions without auth */ }
+```
+
+## 4. Routing & OData
+- Controllers extend `ODataController`
+- Use `[HttpGet]` and `[EnableQuery]` on read endpoints
+- OData capabilities to permit: `$select,$filter,$orderby,$expand,$count`
+- Set a single max page size: pick either `.EnableQueryFeatures(maxTopValue: N)` or `.SetMaxTop(N)` (not both). The repository currently shows both with different values; update `Program.cs` to one strategy.
+- Expose metadata entity sets in EDM for lookups (e.g., `Country`, `ClientProjectCountry`), using `MetaDataViewModel` shape.
+
+```csharp
+// ✅ Good (single source of truth)
+services.AddControllers().AddOData(opt =>
+  opt.AddRouteComponents("v1", ODataEdmModelBuilder.GetModels())
+     .EnableQueryFeatures(maxTopValue: 100)
+     .Select().Filter().OrderBy().Count().Expand());
+```
+
+### Current EDM Entity Sets (v1)
+- `Client`, `ClientProject`, `ClientUser`
+- Master metadata lookups as `MetaDataViewModel` entity sets:
+  - `ProjectAuditResponsibility`, `ProjectDepartment`, `ProjectRiskArea`, `ProjectUnit`, `Country`
+  - `Module`, `NavigationAction`, `RoleNavigationUserAction`
+- Tenant-scoped client metadata lookups as `MetaDataViewModel` entity sets:
+  - `ClientProjectAuditResponsibility`, `ClientProjectCountry`, `ClientProjectDepartment`, `ClientProjectRiskArea`, `ClientProjectUnit`
+
+Keep this list synchronized with `Model/EdmModelBuilder.cs`.
+
+## 5. Controllers
+- Keep controllers thin; orchestrate via Business interfaces
+- Constructor-inject Business services and validators
+- Log start/end of each action; include method name
+- Return `IActionResult` with proper status codes; do not return raw strings
+- When Business returns `IQueryable<ViewModel>`, prefer composing OData on it and materialize at the API edge as needed. Do not call AutoMapper `Map` inside the `IQueryable` pipeline; rely on Business `ProjectTo<T>` for EF-translatable mapping.
+- Country metadata endpoint pattern:
+  - Controller: `Master/MetaData/CountryController`
+  - GET only, OData-enabled, returns `IQueryable<MetaDataViewModel>` via Business
+
+### 5.1) Controller Testing Requirements
+- **Unit Test Coverage**: All controller actions must have comprehensive unit tests
+- **Test Structure**: Use `CreateSut()` factory method for consistent setup
+- **Mock Dependencies**: Mock `ILogger<T>`, `IBusiness`, and `IValidator<T>` services
+- **HTTP Status Codes**: Test all possible status codes (200, 201, 204, 400, 404, 500)
+- **Validation Testing**: Test both valid and invalid input scenarios
+- **Exception Handling**: Test business exceptions propagate to appropriate HTTP status codes
+- **OData Results**: Use `NotFoundODataResult` for 404 scenarios, `OkObjectResult` for 200
+
+```csharp
+// ✅ Good: Controller test pattern
+public class CountryControllerUnitTests
+{
+    private readonly Mock<ILogger<CountryController>> _logger = new();
+    private readonly Mock<ICountryBusiness> _business = new();
+
+    private CountryController CreateSut() =>
+        new(_logger.Object, _business.Object);
+
+    [Fact]
+    public async Task GetAsync_Returns200_WithData()
+    {
+        var data = new List<MetaDataViewModel>().AsQueryable();
+        _business.Setup(b => b.GetAsync()).ReturnsAsync(data);
+        
+        var sut = CreateSut();
+        var result = await sut.GetAsync();
+        
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.NotNull(ok.Value);
+        _business.Verify(b => b.GetAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetAsync_WhenBusinessThrows_Returns500()
+    {
+        _business.Setup(b => b.GetAsync()).ThrowsAsync(new Exception("db error"));
+        
+        var sut = CreateSut();
+        var result = await sut.GetAsync();
+        
+        var obj = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, obj.StatusCode);
+    }
+}
+```
+
+```csharp
+// ✅ Good
+[HttpGet]
+[EnableQuery]
+[ProducesResponseType(StatusCodes.Status200OK)]
+[ProducesResponseType(StatusCodes.Status500InternalServerError)]
+public async Task<IActionResult> GetAsync()
+{
+  const string methodName = $"{ClassName}: {nameof(GetAsync)}";
+  try
+  {
+    logger.LogInformation("{MethodName} - started", methodName);
+    var result = await business.GetAsync();
+    return Ok(result);
+  }
+  catch (Exception ex)
+  {
+    logger.LogError(ex, "{MethodName} - error", methodName);
+    return Problem(title: "Unexpected error", statusCode: 500);
+  }
+  finally
+  {
+    logger.LogInformation("{MethodName} - completed", methodName);
+  }
+}
+```
+
+## 6. Validation
+- Input validation using FluentValidation or model annotations
+- Validate at the API edge; re-check invariants in Business
+- On validation failure, return ProblemDetails with `status: 400` and an `errors` bag
+
+## 7. Error Handling & ProblemDetails
+- Use RFC7807 ProblemDetails consistently
+  - Fields: `type`, `title`, `status`, `detail` (when safe), `traceId` (from correlation)
+- Do not leak stack traces or internal details
+
+Note: Some OData controllers currently return `NotFoundODataResult` for 404 scenarios. When migrating to ProblemDetails across the board, ensure OData 404 behavior is aligned or explicitly handled in tests.
+
+```csharp
+return Problem(
+  type: "https://httpstatuses.com/400",
+  title: "Invalid request",
+  detail: "See errors for details",
+  statusCode: StatusCodes.Status400BadRequest);
+```
+
+## 8. Swagger / OpenAPI
+- Required Bearer security by default
+- Keep descriptions and examples accurate
+- Use `CustomSchemaIds` with full type names to avoid collisions
+
+### XML Comments (Swagger)
+- Enable XML documentation generation in `KonaAI.Master.API.csproj` and include it in Swagger for richer docs.
+
+```xml
+<PropertyGroup>
+  <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  <NoWarn>$(NoWarn);1591</NoWarn>
+</PropertyGroup>
+```
+
+- In Swagger configuration, include XML comments (adapt path for environment):
+
+```csharp
+var xmlFile = typeof(Program).Assembly.GetName().Name + ".xml";
+var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+c.IncludeXmlComments(xmlPath, includeControllerXmlComments: true);
+```
+
+- Controllers and public action methods should have XML summaries and param/returns tags to appear in Swagger.
+
+## 9. Configuration
+- All secrets and tokens loaded via configuration `Tokens:*`
+- Bind options with `IOptions<T>` (avoid reading configuration in controllers)
+- `appsettings.*` per environment with overrides
+
+## 10. Security
+- Defense-in-depth: input validation, authN, authZ, avoid dynamic SQL
+- Log only non-sensitive data; never log secrets or tokens
+- Enforce least-privilege across external calls
+
+## 11. CORS & Compression
+- CORS policy `AllowAllOrigins` currently permissive; restrict by env for production
+- Brotli compression enabled for `application/json`, `text/plain`, `text/css`, `application/javascript`, `image/svg+xml`
+
+## 12. Observability
+- Serilog via `UseSerilog` reads configuration settings
+- Include `CorrelationId`, `UserId`, `TenantId` when available
+- Emit timings for DB/external calls where relevant
+- Correlation header: accept `X-Correlation-Id` if provided; otherwise generate one and include in responses
+
+```csharp
+// Example: add correlation id to responses
+HttpContext.Response.Headers["X-Correlation-Id"] =
+  HttpContext.TraceIdentifier;
+```
+
+## 13. Versioning
+- Current OData route under `v1`
+- Breaking changes must land under new version (e.g., `/api/v2` or `v2` route components)
+
+## 14. Multi-Tenancy Integration
+- API trusts `IUserContextService` to extract claims
+- Repository applies tenant filter via `ClientId`
+- API surface must not bypass auth except for login endpoints
+
+## 15. Actionable To-Dos (Consistency Enforcement)
+- Align OData max top limit to a single value
+- Apply `[Authorize]` to all write endpoints
+- Standardize ProblemDetails responses in controllers
+- Verify login endpoints alone bypass user context extraction
+
+## 16. References (Code Pointers)
+- Program: `KonaAI.Master.API/Program.cs`
+- Auth: `Extensions/AuthenticationExtension.cs`, `Extensions/AuthorizationExtension.cs`
+- Swagger: `Extensions/SwaggerExtension.cs`
+- OData EDM: `Model/EdmModelBuilder.cs`
+- Controllers: `Controllers/**` (Master, Tenant, Authentication)
+ - Unified CI Workflow: `.github/workflows/code-review.yml`
+ - Local Agent Script: `scripts/code-review-agent.ps1`
+
+## 17. File & Directory Map (API Project)
+- Root: `KonaAI.Master/KonaAI.Master.API/`
+  - `Program.cs` — service registration (Compression, CORS, OData, DbContext, DI, Swagger, Auth)
+  - `appsettings.json`, `appsettings.Development.json` — configuration (Tokens, ConnectionStrings)
+  - `Controllers/`
+    - `Authentication/LoginController.cs` — login/auth endpoints
+    - `Master/App/*Controller.cs` — master app resources
+    - `Master/MetaData/*Controller.cs` — metadata resources (Country, Navigation, Module, etc.)
+    - `Tenant/Client/*Controller.cs` — tenant client resources
+    - `Tenant/UserMetaData/*Controller.cs` — tenant user metadata resources
+    - `WeatherForecastController.cs` — sample controller
+  - `Extensions/`
+    - `AuthenticationExtension.cs` — JWT bearer configuration and policy scheme
+    - `AuthorizationExtension.cs` — default authorization policy
+    - `DependencyExtension.cs` — DI scanning, AutoMapper, validators, UnitOfWork, UserContextService
+    - `SwaggerExtension.cs` — Swagger/OpenAPI setup with Bearer scheme
+  - `Model/`
+    - `EdmModelBuilder.cs` — OData EDM model builder for route `v1`
+  - `Properties/`
+    - `launchSettings.json` — local run profiles
+  - `Dockerfile` — containerization
+
+Notes:
+- Ensure OData route prefix in `Program.cs` matches controller expectations (`v1`).
+- Keep swagger doc title and version consistent with route versioning.
+
+## 18. Change Propagation & Cross-References
+
+## 19) XML Documentation Standards
+
+### 19.1 Controller Documentation
+```csharp
+// ✅ Good: Accurate model references
+/// <summary>
+/// Updates an existing client role type by its unique identifier.
+/// </summary>
+/// <param name="rowId">The unique identifier of the client role type to update.</param>
+/// <param name="clientRoleType">The updated client role type data.</param>
+/// <returns>No content if the update is successful.</returns>
+/// <response code="204">The client role type was successfully updated.</response>
+/// <response code="400">The request data is invalid.</response>
+/// <response code="404">The client role type was not found.</response>
+/// <remarks>
+/// The request body must contain a valid <see cref="ClientRoleTypeUpdateModel"/>.
+/// </remarks>
+
+// ❌ Bad: Incorrect model references
+/// <remarks>
+/// The request body must contain a valid <see cref="ClientUpdateModel"/>.
+/// </remarks>
+```
+
+### 19.2 Response Type Documentation
+```csharp
+// ✅ Good: Proper response type attributes
+[ProducesResponseType(StatusCodes.Status200OK, Type = typeof(IQueryable<ClientRoleTypeViewModel>))]
+[ProducesResponseType(StatusCodes.Status500InternalServerError)]
+[ProducesResponseType(StatusCodes.Status401Unauthorized)]
+
+// ❌ Bad: Missing response type attributes
+[HttpGet]
+public async Task<IActionResult> GetAsync()
+```
+
+### 19.3 Parameter Documentation
+```csharp
+// ✅ Good: Comprehensive parameter documentation
+/// <param name="rowId">The unique identifier of the entity to retrieve.</param>
+/// <param name="payload">The data model containing the updated information.</param>
+
+// ❌ Bad: Missing or incorrect parameter documentation
+/// <param name="id">The identifier.</param>
+```
+
+### 19.4 Error Handling Documentation
+```csharp
+// ✅ Good: Comprehensive exception documentation
+/// <exception cref="KeyNotFoundException">Thrown when the specified entity is not found.</exception>
+/// <exception cref="ValidationException">Thrown when the input data is invalid.</exception>
+/// <exception cref="UnauthorizedAccessException">Thrown when the user is not authorized.</exception>
+
+// ❌ Bad: Missing exception documentation
+/// <summary>
+/// Updates an entity.
+/// </summary>
+```
+
+### 19.5 Model Documentation Standards
+```csharp
+// ✅ Good: Comprehensive view model documentation
+/// <summary>
+/// Represents a client role type view model.
+/// </summary>
+/// <remarks>
+/// This view model is used for displaying client role type information in API responses.
+/// It inherits from <see cref="BaseAuditViewModel"/> for audit tracking.
+/// </remarks>
+public class ClientRoleTypeViewModel : BaseAuditViewModel
+{
+    /// <summary>
+    /// Gets or sets the role type name.
+    /// </summary>
+    public string Name { get; set; } = string.Empty;
+}
+```
+
+### 19.6 Validation Documentation
+```csharp
+// ✅ Good: Comprehensive validator documentation
+/// <summary>
+/// Validator for <see cref="ClientRoleTypeCreateModel"/>.
+/// </summary>
+/// <remarks>
+/// Provides validation rules for client role type creation.
+/// Ensures required fields are provided and data meets business rules.
+/// </remarks>
+public class ClientRoleTypeCreateValidator : AbstractValidator<ClientRoleTypeCreateModel>
+{
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ClientRoleTypeCreateValidator"/> class.
+    /// </summary>
+    public ClientRoleTypeCreateValidator()
+    {
+        RuleFor(x => x.Name)
+            .NotEmpty()
+            .WithMessage("Role type name is required")
+            .MaximumLength(255)
+            .WithMessage("Role type name cannot exceed 255 characters");
+    }
+}
+```
+
+### 19.7 Common Anti-Patterns to Avoid
+- **Incorrect Model References**: Don't reference wrong model types in cref
+- **Missing Response Types**: Don't skip ProducesResponseType attributes
+- **Incomplete Documentation**: Don't provide minimal XML documentation
+- **Wrong Parameter Names**: Don't use incorrect parameter names in documentation
+- **Missing Exception Documentation**: Don't skip exception documentation
+
+### 19.8 Best Practices
+- **Accurate Type References**: Only reference existing types in cref
+- **Comprehensive Documentation**: Provide detailed XML documentation
+- **Proper Response Types**: Include all possible response types
+- **Exception Documentation**: Document all possible exceptions
+- **Parameter Accuracy**: Ensure parameter names match method signatures
+
+### 19.9 Validation Checklist
+- [ ] All cref attributes reference existing types
+- [ ] All ProducesResponseType attributes are included
+- [ ] All parameters are properly documented
+- [ ] All exceptions are documented
+- [ ] All response codes are documented
+- [ ] Build passes with `/warnaserror` flag
+- [ ] No XML documentation warnings
+- [ ] No missing response type warnings
+- [ ] All cref attributes resolve correctly
+- [ ] Swagger documentation is complete
+
+**See Orchestrator-RuleBook.mdc for centralized change coordination across all layers.**
+
+This rulebook is automatically updated when:
+- API contracts, routing, or auth patterns change
+- OData, Swagger, or middleware configurations are modified
+- Error handling or response patterns are updated
+- XML documentation standards or Swagger integration requirements change
+
+## Master Metadata Endpoints (v1)
+
+- Added read-only OData endpoints returning `MetaDataViewModel` (RowId, Name, Description, OrderBy):
+  - `GET /v1/ProjectAuditResponsibility`
+  - `GET /v1/ProjectDepartment`
+  - `GET /v1/ProjectRiskArea`
+  - `GET /v1/ProjectUnit`
+  - `GET /v1/Country`
+  - `GET /v1/Module`
+  - `GET /v1/AppNavigation`
+  - `GET /v1/NavigationAction`
+  - `GET /v1/RoleNavigationUserAction`
+
+- EDM registrations (in `Model/EdmModelBuilder.cs`) include:
+  - `EntitySet<MetaDataViewModel>("ProjectAuditResponsibility")`
+  - `EntitySet<MetaDataViewModel>("ProjectDepartment")`
+  - `EntitySet<MetaDataViewModel>("ProjectRiskArea")`
+  - `EntitySet<MetaDataViewModel>("ProjectUnit")`
+  - `EntitySet<MetaDataViewModel>("Country")`
+  - `EntitySet<MetaDataViewModel>("Module")`
+  - `EntitySet<MetaDataViewModel>("AppNavigation")`
+  - `EntitySet<MetaDataViewModel>("NavigationAction")`
+  - `EntitySet<MetaDataViewModel>("RoleNavigationUserAction")`
+  - Existing tenant-scoped sets remain (e.g., `ClientProjectCountry`, etc.)
+
+- Controller pattern:
+  - Thin `ODataController` with `[HttpGet]`, `[EnableQuery]` delegating to Business `GetAsync()`
+  - Return `Ok(IQueryable<MetaDataViewModel>)`
+  - Support OData key access via explicit route `[HttpGet("v1/EntityName({rowId:guid})")]` for single-item retrieval
+  - Log start/end and map 500 to ProblemDetails in future refactor
+
+- AutoMapper:
+  - Ensure profiles map master entities to `MetaDataViewModel` (e.g., `Country`, `ProjectAuditResponsibility`, `ProjectDepartment`, `ProjectRiskArea`, `ProjectUnit`, `Module`, `AppNavigation`, `NavigationAction`, `RoleNavigationUserAction`).
+
+## Write Endpoints (ClientProject POST)
+
+- Controllers must remain thin: validate DTO using FluentValidation, then delegate to Business `CreateAsync`.
+- Do not perform mapping or any client-metadata creation in controller.
+- Ensure `[Authorize]` is present on write actions. Requests MUST include a JWT with `ClientId`, `Sid`, and `Name` so audit and tenancy fields populate.
+- On success, return `201 Created`; on validation failure, return ProblemDetails (400); on duplicate name, return ProblemDetails (409) instead of raw 500.
+- **OData POST routing**: Use `[HttpPost]` without explicit route to allow OData conventions to handle routing. Explicit routes like `[HttpPost("v1/ClientProject")]` cause Swagger conflicts.
+- Business responsibilities (current behavior):
+  - Resolve master metadata by `RowId` (AuditResponsibility, RiskArea; optional Country/Unit/Department)
+  - Map payload to domain and set resolved master FK IDs explicitly
+  - Set `ProjectStatusId` explicitly (default or resolved) before save
+  - Apply audit defaults via `IUserContextService.SetDomainDefaults` to populate `ClientId`, `CreatedBy*`, `ModifiedBy*`
+  - Persist only the `ClientProject` row (no client-metadata upserts in this flow)
+
+```csharp
+// ✅ Good - Let OData handle routing
+[HttpPost]
+public async Task<IActionResult> PostAsync([FromBody] ClientProjectCreateModel project)
+
+// ❌ Bad - Explicit route causes Swagger conflicts
+[HttpPost("v1/ClientProject")]
+public async Task<IActionResult> PostAsync([FromBody] ClientProjectCreateModel project)
+```
+
+## 19. Authentication/Login Endpoint Conventions
+- Client IP resolution order when handling login:
+  1) `X-Forwarded-For` (first IP when multiple)
+  2) `X-Real-IP`
+  3) `HttpContext.Connection.RemoteIpAddress`
+- Pass resolved client IP and `User-Agent` to business layer (`AuthenticateUserAsync(..., clientIp, userAgent)`).
+- Validation failures return `400 BadRequest` with a collection of `ValidationFailure` items.
+- Authentication failures throw `AuthenticationException` and map to `401 Unauthorized` with message.
+- Success returns `200 OK` with `TokenResponse` (includes `Token`, `RefreshToken`, `RoleId`, `RoleName`).

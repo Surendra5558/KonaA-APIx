@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <!-- Include only API and Business layers -->
+          <Include>[KonaAI.Master.API*]*,[KonaAI.Master.Business*]*</Include>
+          
+          <!-- Exclude test assemblies -->
+          <Exclude>[*.Test*]*,[*.Tests*]*</Exclude>
+          
+          <!-- Exclude by file patterns -->
+          <ExcludeByFile>**/Program.cs,**/WeatherForecast.cs,**/TestTokenGenerator.cs,**/Extensions/**/*.cs,**/Model/**/*.cs,**/Profile/**/*.cs,**/Interface/**/*.cs,**/Repository/**/*.cs,**/Domain/**/*.cs,**/Configuration/**/*.cs,**/DataAccess/**/*.cs,**/Migrations/**/*.cs,**/*.json,**/*.csproj,**/*.http</ExcludeByFile>
+          
+          <!-- Exclude by attributes -->
+          <ExcludeByAttribute>GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
+          
+          <!-- Coverage settings -->
+          <Format>cobertura</Format>
+          <SingleHit>false</SingleHit>
+          <SkipAutoProps>true</SkipAutoProps>
+          <UseSourceLink>true</UseSourceLink>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

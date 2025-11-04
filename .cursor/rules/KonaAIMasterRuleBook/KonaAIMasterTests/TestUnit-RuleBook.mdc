@@ -1,0 +1,393 @@
+---
+description: Testing rules for KonaAI.Master covering unit, integration, and API tests.
+globs: KonaAI.Master/KonaAI.Master.Test.*/***
+alwaysApply: false
+modifiedAt: 2025-09-26
+---
+# Test Unit RuleBook
+
+Guidelines for unit tests (xUnit + Moq), coverage, and structure.
+
+## 1) Frameworks & Packages
+- xUnit, Moq, Microsoft.NET.Test.Sdk
+- `coverlet.collector` for coverage in CI
+- Add `Using Include="Xunit"` in the test project for global usings
+
+## 2) Project References
+- Reference Business, Model, and Repository projects for interfaces and types under test
+
+## 3) Unit Test Focus
+- Target Business layer; mock `IUnitOfWork`/repositories/external services
+- Target Controller layer; mock Business services and validators
+- Avoid network, filesystem, or database access
+
+## 4) Structure & Naming
+- Mirror Business feature structure (e.g., `Business/Master/...`, `Business/Tenant/...`)
+- Mirror Controller feature structure (e.g., `Controllers/Master/...`, `Controllers/Tenant/...`)
+- One test class per SUT class; method naming: `Method_Given_When_Should`
+
+```csharp
+[Fact]
+public async Task GetAsync_GivenValidState_ShouldReturnQueryable()
+{
+  // Arrange
+  var uow = new Mock<IUnitOfWork>();
+  var sut = new ClientBusiness(logger, mapper, userContext, uow.Object);
+  // Act
+  var result = await sut.GetAsync();
+  // Assert
+  Assert.NotNull(result);
+}
+```
+
+## 5) Mocking & Verification
+- Arrange inputs and mock expectations; verify calls with expected times/args
+- Verify outcomes, not implementation details
+
+## 6) Assertions
+- Assert success and failure paths (exceptions, nulls)
+- Validate projections and mapping calls when relevant
+- When Business composes EF-translatable queries with `ProjectTo<T>`, assert on the final materialized list and verify repositories were invoked; avoid asserting `mapper.Map` calls inside the query.
+
+### 6.1) Concrete Patterns From Current Codebase
+- UoW property wiring via property getters:
+  ```csharp
+  _uow.SetupGet(x => x.ClientProjects).Returns(_clientProjects.Object);
+  ```
+- AutoMapper mapping for list projections and TempMapper wrappers:
+  ```csharp
+  _mapper.Setup(m => m.Map<ClientViewModel>(It.IsAny<Client>()))
+         .Returns((Client c) => new ClientViewModel { RowId = c.RowId, Name = c.Name });
+
+  _mapper.Setup(m => m.Map<ClientProjectViewModel>(It.IsAny<ClientProjectViewProfile.TempMapper>()))
+         .Returns((ClientProjectViewProfile.TempMapper tm) => new ClientProjectViewModel { RowId = tm.ClientProject.RowId, Name = tm.ClientProject.Name });
+  ```
+- IQueryable results are enumerated in tests for assertions:
+  ```csharp
+  var queryable = await sut.GetAsync();
+  var list = queryable.ToList();
+  Assert.Single(list);
+  ```
+- Verify calls and exception propagation:
+  ```csharp
+  _clientRepo.Verify(r => r.GetAsync(), Times.Once);
+  await Assert.ThrowsAsync<DbUpdateException>(() => sut.CreateAsync(model));
+  ```
+- Verify domain defaults set with `DataModes` on writes:
+  ```csharp
+  _userContext.Verify(u => u.SetDomainDefaults(It.IsAny<ClientProject>(), DataModes.Add), Times.Once);
+  ```
+
+### 6.2) CountryBusiness and ClientUserBusiness Patterns
+- CountryBusiness:
+  - Wire `IUnitOfWork.Countries` via `SetupGet`.
+  - Map `Country` → `MetaDataViewModel` and enumerate `IQueryable` before asserting.
+  - Propagate repository exceptions unchanged.
+- ClientUserBusiness:
+  - Join `ClientUsers` with `Users` in tests by setting up both repos to return queryables.
+  - Map `User` → `ClientUserViewModel` (business maps from `User`).
+  - For create flows relying on `Context` DbSet LINQ, provide a fake context with in-memory DbSets for `Users`, `ClientUsers`, and `LogOnTypes` (sync LINQ is sufficient when business uses `Where/FirstOrDefault` synchronously).
+  - Validate duplicate username path throws, and success flow creates `User` then `ClientUser` and saves.
+
+### 6.3) Controller Testing Patterns
+- **Controller Setup**: Mock `ILogger<T>`, `IBusiness`, and `IValidator<T>` dependencies
+- **Test Structure**: Use `CreateSut()` factory method for consistent setup
+- **HTTP Status Codes**: Assert specific status codes (200, 201, 204, 400, 404, 500)
+- **OData Results**: Use `NotFoundODataResult` for 404 scenarios, `OkObjectResult` for 200
+- **Validation Testing**: Mock `ValidationResult` for both success and failure scenarios
+- **Exception Handling**: Test business exceptions propagate to appropriate HTTP status codes
+
+#### 6.3.1 Authorization Attribute Assertions (Finalized)
+- When asserting authorization, accept EITHER class-level or method-level attributes depending on controller design.
+- Prefer this pattern to avoid false negatives:
+
+```csharp
+var method = typeof(CountryController).GetMethod(nameof(CountryController.GetAsync));
+var classAuthorize = typeof(CountryController).GetCustomAttribute<AuthorizeAttribute>(inherit: true);
+var methodHasAuthorize = method!.GetCustomAttributes<AuthorizeAttribute>(inherit: true).Any();
+Assert.True(classAuthorize is not null || methodHasAuthorize);
+```
+
+- Special cases:
+  - `LoginController` MUST NOT have class-level `[Authorize]`.
+  - Controllers like `ClientUserController` and `ClientController` may assert specific `Policy` strings on methods; normalize whitespace when comparing policies.
+
+```csharp
+// ✅ Good: Controller test pattern
+public class CountryControllerUnitTests
+{
+    private readonly Mock<ILogger<CountryController>> _logger = new();
+    private readonly Mock<ICountryBusiness> _business = new();
+
+    private CountryController CreateSut() =>
+        new(_logger.Object, _business.Object);
+
+    [Fact]
+    public async Task GetAsync_Returns200_WithData()
+    {
+        var data = new List<MetaDataViewModel>().AsQueryable();
+        _business.Setup(b => b.GetAsync()).ReturnsAsync(data);
+        
+        var sut = CreateSut();
+        var result = await sut.GetAsync();
+        
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.NotNull(ok.Value);
+        _business.Verify(b => b.GetAsync(), Times.Once);
+    }
+}
+```
+
+### 6.4) CRUD Controller Testing Patterns
+- **GET Operations**: Test success (200), not found (404), and business exceptions (500)
+- **POST Operations**: Test validation success (201), validation failure (400), and business exceptions (500)
+- **PUT Operations**: Test success (204), not found (404), validation failure (400), and business exceptions (500)
+- **DELETE Operations**: Test success (204), not found (404), and business exceptions (500)
+
+```csharp
+// ✅ Good: CRUD controller test pattern
+[Fact]
+public async Task PostAsync_ValidModel_Returns201()
+{
+    var model = new ClientUserCreateModel { UserName = "testuser" };
+    _createValidator.Setup(v => v.ValidateAsync(model, default)).ReturnsAsync(new ValidationResult());
+    _business.Setup(b => b.CreateAsync(model)).ReturnsAsync(1);
+
+    var sut = CreateSut();
+    var result = await sut.PostAsync(model);
+
+    var created = Assert.IsType<CreatedResult>(result);
+    Assert.Equal(201, created.StatusCode);
+}
+
+[Fact]
+public async Task PostAsync_ValidationFails_Returns400()
+{
+    var model = new ClientUserCreateModel();
+    var validationResult = new ValidationResult(new[] { new ValidationFailure("UserId", "Required") });
+    _createValidator.Setup(v => v.ValidateAsync(model, default)).ReturnsAsync(validationResult);
+
+    var sut = CreateSut();
+    var result = await sut.PostAsync(model);
+
+    var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+    Assert.Equal(400, badRequest.StatusCode);
+}
+```
+
+## 7) Coverage & CI
+- Run coverlet in unified CI workflow `.github/workflows/code-review.yml`; focus on critical paths and invariants
+- Developers should run `scripts/code-review-agent.ps1` locally (QuickOnly during dev; full before push)
+- Optionally add runsettings to exclude generated/boilerplate code
+
+### Example GitHub Actions step
+```yaml
+- name: Test
+  run: dotnet test --collect:"XPlat Code Coverage" --logger trx
+```
+
+## 8) Test Hygiene
+- Isolate tests; avoid shared state
+- Use `Theory` with inline/member data for parameterized cases
+- Keep tests fast (<100ms ideally)
+
+## 9) PR-Review Checklist (Unit Tests)
+- Tests cover happy and sad paths for changed/new business methods
+- Tests cover happy and sad paths for changed/new controller actions
+- Mocks verify critical repository interactions and projections
+- Mocks verify critical business service interactions and validation
+- No external resources (network/FS/DB)
+- Clear Arrange/Act/Assert structure; names follow `Method_Given_When_Should`
+- Coverage collected (coverlet) and thresholds met if defined
+- Deterministic, no timing flakes
+
+### 9.1) Example Expectations To Review (from current tests)
+- UoW repos wired via `SetupGet` for each used repository.
+- `GetAsync` tests enumerate `IQueryable` and assert content, not just non-null.
+- CRUD tests verify `SetDomainDefaults` with correct `DataModes` and `SaveChangesAsync` calls.
+- Mapping calls verified with expected call counts (`Times.Exactly(n)` when projecting lists).
+- Negative paths assert specific exception types (`KeyNotFoundException`, `InvalidOperationException`, `DbUpdateException`).
+- Controller tests verify HTTP status codes (200, 201, 204, 400, 404, 500) for all scenarios.
+- Controller tests mock validation results for both success and failure cases.
+- Controller tests verify business service calls with `Times.Once` or appropriate counts.
+- OData controllers use `NotFoundODataResult` for 404 scenarios, `OkObjectResult` for 200.
+
+## 10) References
+- Project: `KonaAI.Master.Test.Unit.csproj`
+- Example Business tests: `Business/Master/ClientBusinessTests.cs`, `Business/Tenant/Client/ClientProjectBusinessTests.cs`
+- Example Controller tests: `Controllers/Master/MetaData/CountryControllerUnitTests.cs`, `Controllers/Tenant/Client/ClientUserControllerUnitTests.cs`
+
+### Code References
+The following snippets exemplify approved patterns in this repository:
+
+```36:75:KonaAI.Master/KonaAI.Master.Test.Unit/Business/Master/ClientBusinessTests.cs
+// GetAsync verifies mapping and repo calls
+[Fact]
+public async Task GetAsync_ReturnsMappedQueryable()
+{
+    _clientRepo.Setup(r => r.GetAsync()).ReturnsAsync(clients);
+    _mapper.Setup(m => m.Map<ClientViewModel>(It.IsAny<Client>()))
+           .Returns((Client c) => new ClientViewModel { RowId = c.RowId, Name = c.Name });
+    var sut = CreateSut();
+    var result = (await sut.GetAsync()).ToList();
+    Assert.Equal(2, result.Count);
+    _clientRepo.Verify(r => r.GetAsync(), Times.Once);
+    _mapper.Verify(m => m.Map<ClientViewModel>(It.IsAny<Client>()), Times.Exactly(2));
+}
+```
+
+```147:166:KonaAI.Master/KonaAI.Master.Test.Unit/Business/Tenant/Client/ClientProjectBusinessTests.cs
+// GetAsync verifies TempMapper mapping path
+[Fact]
+public async Task GetAsync_ReturnsJoinedAndMappedQueryable()
+{
+    SetupHappyPathGetAsyncData();
+    var sut = CreateSut();
+    var list = (await sut.GetAsync()).ToList();
+    Assert.Single(list);
+    Assert.Equal("Project A", list[0].Name);
+    _clientProjects.Verify(r => r.GetAsync(), Times.Once);
+    _mapper.Verify(m => m.Map<ClientProjectViewModel>(It.IsAny<ClientProjectViewProfile.TempMapper>()), Times.Once);
+}
+```
+
+```1:60:KonaAI.Master/KonaAI.Master.Test.Unit/Business/Master/CountryBusinessTests.cs
+// CountryBusiness GetAsync mapping and exception propagation
+[Fact]
+public async Task GetAsync_ReturnsMappedQueryable() { /* ... */ }
+[Fact]
+public async Task GetAsync_WhenRepoThrows_Propagates() { /* ... */ }
+```
+
+```1:70:KonaAI.Master/KonaAI.Master.Test.Unit/Business/Tenant/Client/ClientUserBusinessTests.cs
+// ClientUserBusiness join, mapping, duplicate guard, and create success with DbSet-backed Context
+[Fact]
+public async Task GetAsync_ReturnsJoinedAndMappedQueryable() { /* ... */ }
+[Fact]
+public async Task GetByRowIdAsync_NotFound_ThrowsKeyNotFound() { /* ... */ }
+[Fact]
+public async Task CreateAsync_WhenDuplicateUserName_ThrowsKeyNotFound() { /* ... */ }
+[Fact]
+public async Task CreateAsync_Success_CreatesUserAndClientUserAndSaves() { /* ... */ }
+```
+
+```1:50:KonaAI.Master/KonaAI.Master.Test.Unit/Controllers/Master/MetaData/CountryControllerUnitTests.cs
+// CountryController GET operations with OData results and exception handling
+[Fact]
+public async Task GetAsync_Returns200_WithData() { /* ... */ }
+[Fact]
+public async Task GetAsync_WhenBusinessThrows_Returns500() { /* ... */ }
+[Fact]
+public async Task GetByRowIdAsync_NotFound_Returns404() { /* ... */ }
+[Fact]
+public async Task GetByRowIdAsync_Found_Returns200() { /* ... */ }
+```
+
+```1:80:KonaAI.Master/KonaAI.Master.Test.Unit/Controllers/Tenant/Client/ClientUserControllerUnitTests.cs
+// ClientUserController CRUD operations with validation and HTTP status codes
+[Fact]
+public async Task PostAsync_ValidModel_Returns201() { /* ... */ }
+[Fact]
+public async Task PostAsync_ValidationFails_Returns400() { /* ... */ }
+[Fact]
+public async Task PutAsync_ValidModel_Returns204() { /* ... */ }
+[Fact]
+public async Task PutAsync_NotFound_Returns404() { /* ... */ }
+[Fact]
+public async Task DeleteAsync_Exists_Returns204() { /* ... */ }
+[Fact]
+public async Task DeleteAsync_NotFound_Returns404() { /* ... */ }
+```
+### 6.3) Async IQueryable Helpers
+When business code uses EF Core async operations (e.g., `ToListAsync`) against repo `IQueryable`, provide async-capable queryables in tests using a lightweight async harness.
+
+```1:40:KonaAI.Master/KonaAI.Master.Test.Unit/Business/Tenant/Client/ClientProjectBusinessTests.cs
+// TestAsyncEnumerable + TestAsyncQueryProvider to back async LINQ in tests
+```
+
+## 11) Advanced Mocking Patterns (From Recent Implementation)
+
+### 11.1) ExecuteAsync Transaction Testing
+When business logic uses `unitOfWork.ExecuteAsync` for transactional operations, ensure the delegate is executed in tests:
+
+```csharp
+// ✅ Good: ExecuteAsync delegate execution
+_uow.Setup(u => u.ExecuteAsync(It.IsAny<Func<Task>>())).Returns<Func<Task>>(f => f());
+
+// ❌ Avoid: Delegate not executed
+_uow.Setup(u => u.ExecuteAsync(It.IsAny<Func<Task>>())).Returns(Task.CompletedTask);
+```
+
+### 11.2) Service Dependencies with Complex Return Types
+For services like `ILicenseService` that return complex objects, mock with concrete return values:
+
+```csharp
+// ✅ Good: Mock with concrete return type
+_licenseService.Setup(l => l.EncryptLicense(It.IsAny<string>(), It.IsAny<string>()))
+               .Returns(new LicenseResult { EncryptedLicense = "mock", EncryptedPrivateKey = "mock" });
+```
+
+### 11.3) UserContext Null Handling
+When business logic directly accesses `UserContext` properties without null checks, expect `NullReferenceException`:
+
+```csharp
+[Fact]
+public async Task CreateAsync_WhenUserContextIsNull_ThrowsException()
+{
+    _userContextService.Setup(u => u.UserContext).Returns((UserContext?)null);
+    _uow.Setup(u => u.ExecuteAsync(It.IsAny<Func<Task>>())).Returns<Func<Task>>(f => f());
+    
+    await Assert.ThrowsAsync<NullReferenceException>(() => sut.CreateAsync(createModel));
+}
+```
+
+### 11.4) AutoMapper ProjectTo Limitations
+When business logic uses `ProjectTo<T>()` with complex joins, consider skipping unit tests in favor of integration tests:
+
+```csharp
+[Fact(Skip = "Skipped due to AutoMapper ProjectTo configuration in unit test context; covered by integration tests")]
+public async Task GetAsync_ReturnsJoinedAndMappedQueryable()
+{
+    // Complex ProjectTo tests are better covered by integration tests
+}
+```
+
+### 11.5) Repository Exception Propagation
+Ensure repository exceptions are properly propagated through business logic:
+
+```csharp
+[Fact]
+public async Task DeleteAsync_WhenRepositoryThrows_PropagatesException()
+{
+    _clientLicenses.Setup(r => r.DeleteAsync(id)).ThrowsAsync(new Exception("Database error"));
+    _uow.Setup(u => u.ExecuteAsync(It.IsAny<Func<Task>>())).Returns<Func<Task>>(f => f());
+    
+    await Assert.ThrowsAsync<Exception>(() => sut.DeleteAsync(id));
+}
+```
+
+## 12) Change Propagation & Cross-References
+
+**See Orchestrator-RuleBook.mdc for centralized change coordination across all layers.**
+
+This rulebook is automatically updated when:
+- Unit testing frameworks, patterns, or coverage requirements change
+- Mock strategies or test data patterns are modified
+- Testing conventions or CI/CD requirements are updated
+- New business logic patterns require updated testing approaches
+
+## 13) Mocking Discipline
+- Prefer `MockBehavior.Strict` when validating interaction contracts; verify critical interactions with `Verify`/`VerifyAll`
+- Avoid over-constraining mocks (verify outcomes, not implementation details)
+- Reset or create fresh mocks per test to avoid cross-test coupling
+
+### 13.1) Repository Join Heavy Scenarios
+- When business logic performs joins across multiple repositories (e.g., ClientProject create/read flows), set up minimal valid join data per dependency to satisfy invariants, and assert that missing joins raise clear exceptions. Use focused tests for each missing join (AR, Risk, Country, BusinessUnit, Department) as shown in `ClientProjectBusinessTests`.
+
+## 14) What NOT to Test (Unit)
+- Do not hit HTTP pipeline, middleware, or EF Core DbContext in unit tests
+- Use controller/action tests only for pure orchestration with mocks; use integration tests for middleware and real HTTP concerns
+
+## 15) Optional: RunSettings & Coverage Thresholds
+- Add a `.runsettings` file to exclude generated code and set minimum coverage thresholds
+- Enforce thresholds in CI to prevent regressions

@@ -1,0 +1,40 @@
+
+
+################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.cache
+*.log
+
+# Build outputs
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Tt]emp/
+
+# .NET artifacts
+*.dll
+*.exe
+*.pdb
+*.nuget.*
+*.db
+*.idx
+
+# Test results
+TestResult*/
+*.trx
+*.coverage
+*.coveragexml
+
+
+
+# Configs (if you don’t want to commit them)
+appsettings.*.json
+
+#specific files
+/KonaAI.Master/KonaAI.Master.API/KonaAI.Master.API.csproj.user

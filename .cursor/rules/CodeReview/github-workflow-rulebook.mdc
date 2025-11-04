@@ -1,0 +1,374 @@
+---
+description: Comprehensive GitHub Actions workflow rulebook for KonaAI-API code review pipeline
+globs: [".github/workflows/*.yml", "scripts/*.ps1", "coverlet.runsettings", "CodeReviewAgent/docs/*.md"]
+alwaysApply: true
+---
+
+# GitHub Actions Workflow Rulebook
+
+## Overview
+This rulebook documents the complete end-to-end GitHub Actions workflow for KonaAI-API, covering triggers, job dependencies, parallel execution, quality gates, and artifact management.
+
+## Documentation References
+- **Complete Guide**: `CodeReviewAgent/docs/GITHUB_WORKFLOW_COMPLETE_GUIDE.md` - Comprehensive documentation with visual diagrams, job analysis, and troubleshooting
+- **Local Script Guide**: `CodeReviewAgent/docs/LOCAL_SCRIPT_COMPLETE_GUIDE.md` - Complete local PowerShell script documentation
+
+## Workflow Architecture
+
+### 1. Workflow Name & Purpose
+- **Name**: `Code Review`
+- **Purpose**: Unified CI/CD pipeline with parallel testing, focused coverage, and comprehensive quality gates
+- **File**: `.github/workflows/code-review.yml`
+
+### 2. Triggers & Events
+
+#### Primary Triggers
+```yaml
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'KonaAI.Master/**'
+      - '.github/workflows/code-review.yml'
+    types: [opened, synchronize, reopened, ready_for_review]
+```
+
+#### Secondary Triggers
+```yaml
+merge_group:
+  branches: [ main ]
+
+schedule:
+  - cron: '0 0 * * 1' # Weekly security scan on Monday
+```
+
+**Trigger Logic**:
+- **PR Events**: Validates changes on every PR update to `main`
+- **Merge Queue**: Pre-merge validation for exact commit that will land in `main`
+- **Weekly Security**: Automated security scanning every Monday
+- **Path Filtering**: Only triggers when `KonaAI.Master/**` files change
+
+### 3. Concurrency & Performance
+
+#### Concurrency Control
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+**Benefits**:
+- **Prevents Resource Waste**: Cancels previous runs for same PR
+- **Faster Feedback**: Latest changes get priority
+- **Cost Optimization**: Reduces GitHub Actions minutes usage
+
+#### Permissions (Principle of Least Privilege)
+```yaml
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+```
+
+**Security Model**:
+- **Minimal Access**: Only required permissions granted
+- **Job-Specific**: Additional permissions only where needed (PR comments)
+- **Security Events**: Write access for CodeQL results
+
+## Job Dependencies & Execution Flow
+
+### 1. Bootstrap Job (Foundation)
+```yaml
+bootstrap:
+  name: Bootstrap
+  runs-on: ubuntu-latest
+  timeout-minutes: 5
+```
+
+**Purpose**: Minimal setup to start parallel gates quickly
+**Steps**:
+- Checkout code
+- Setup .NET 8.0.x
+**Duration**: ~30 seconds
+
+### 2. Parallel Quality Gates
+
+#### Lint & Analyzers (Fast Feedback)
+```yaml
+lint-and-analyzers:
+  needs: bootstrap
+  runs-on: ubuntu-latest
+  timeout-minutes: 10
+```
+
+**Quality Checks**:
+- **Code Formatting**: `dotnet format --verify-no-changes`
+- **Analyzer Rules**: `dotnet format analyzers --verify-no-changes`
+- **Fail-Fast**: Catches style issues early
+
+#### Dependency Hygiene (Security Gate)
+```yaml
+dependency-hygiene:
+  needs: bootstrap
+  runs-on: ubuntu-latest
+  timeout-minutes: 10
+  permissions:
+    contents: read
+    issues: write
+    pull-requests: write
+```
+
+**Security Checks**:
+- **Vulnerable Packages**: Blocks packages with known security issues
+- **Deprecated Packages**: Blocks packages marked as deprecated
+- **Outdated Packages**: Advisory comments on PRs (non-blocking)
+
+**Advanced Features**:
+- **JSON Parsing**: Uses `jq` for robust package analysis
+- **Fallback Logic**: Text parsing if JSON fails
+- **PR Comments**: Automated outdated package notifications
+- **Fork Safety**: Skips comments on forked PRs (permission limitations)
+
+### 3. Build Phase (Core Validation)
+
+#### Build Job
+```yaml
+build:
+  needs: [lint-and-analyzers, dependency-hygiene]
+  runs-on: windows-latest
+  timeout-minutes: 20
+```
+
+**Build Features**:
+- **NuGet Caching**: 30-50% faster package restoration
+- **Warnings as Errors**: `/warnaserror` enforcement
+- **Code Style**: `EnforceCodeStyleInBuild=true`
+- **Release Configuration**: Production-ready build
+
+**Cache Strategy**:
+```yaml
+key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/*.csproj') }}
+restore-keys: |
+  ${{ runner.os }}-nuget-
+```
+
+### 4. Parallel Test Execution
+
+#### Unit Tests
+```yaml
+test-unit:
+  needs: build
+  runs-on: windows-latest
+  timeout-minutes: 15
+```
+
+**Test Configuration**:
+- **Project**: `KonaAI.Master.Test.Unit`
+- **Configuration**: Debug mode
+- **Coverage**: XPlat Code Coverage with `coverlet.runsettings`
+- **Logging**: TRX format for test results
+
+#### Integration Tests
+```yaml
+test-integration:
+  needs: build
+  runs-on: windows-latest
+  timeout-minutes: 20
+```
+
+**Test Configuration**:
+- **Project**: `KonaAI.Master.Test.Integration`
+- **Configuration**: Debug mode
+- **Coverage**: XPlat Code Coverage with `coverlet.runsettings`
+- **Logging**: TRX format for test results
+
+**Parallel Benefits**:
+- **~40% Faster**: Simultaneous execution vs sequential
+- **Better Isolation**: Separate artifacts for each test type
+- **Resource Efficiency**: Better GitHub Actions runner utilization
+
+### 5. Coverage Aggregation & Enforcement
+
+#### Coverage Aggregate Job
+```yaml
+coverage-aggregate:
+  needs: [test-unit, test-integration]
+  runs-on: windows-latest
+  timeout-minutes: 10
+```
+
+**Coverage Features**:
+- **Artifact Download**: Combines unit and integration coverage
+- **Report Generation**: HTML, Cobertura, and TextSummary formats
+- **Threshold Enforcement**: 80% minimum for Controllers & Business logic
+- **PowerShell Parsing**: Robust XML parsing on Windows
+
+**Coverage Focus**:
+- **Included**: `KonaAI.Master.(API|Business).*` (Controllers & Business logic)
+- **Excluded**: Repository (integration-tested), Models (DTOs)
+- **Rationale**: Focus on critical application layers
+
+### 6. Security Analysis (Parallel)
+
+#### CodeQL Security Scan
+```yaml
+security-scan:
+  needs: bootstrap
+  runs-on: ubuntu-latest
+  timeout-minutes: 15
+  permissions:
+    actions: read
+    contents: read
+    security-events: write
+```
+
+**Security Features**:
+- **Static Analysis**: CodeQL SAST for C# code
+- **Vulnerability Detection**: SQL injection, XSS, auth flaws
+- **GitHub Integration**: Results in Security tab
+- **Parallel Execution**: Runs alongside build/test chain
+
+### 7. Final Notification
+
+#### Notify Job
+```yaml
+notify:
+  needs: [coverage-aggregate, security-scan]
+  runs-on: ubuntu-latest
+  timeout-minutes: 5
+```
+
+**Summary Features**:
+- **GitHub Step Summary**: Consolidated workflow results
+- **Artifact Links**: Direct access to test results and coverage
+- **Status Reporting**: Clear pass/fail indicators
+- **Documentation**: Links to relevant artifacts
+
+## Artifact Management
+
+### 1. Test Results
+- **Unit Tests**: `unit-test-results` (14 days retention)
+- **Integration Tests**: `integration-test-results` (14 days retention)
+- **Format**: TRX (Test Results XML)
+
+### 2. Coverage Reports
+- **Raw Coverage**: `unit-coverage-raw`, `integration-coverage-raw` (7 days retention)
+- **Final Report**: `coverage-report` (30 days retention)
+- **Formats**: HTML, Cobertura XML, TextSummary
+
+### 3. Artifact Strategy
+- **Retention Policies**: Different retention for different artifact types
+- **Storage Optimization**: Raw coverage (7 days) vs final reports (30 days)
+- **Access Patterns**: Test results for debugging, coverage for analysis
+
+## Quality Gates & Enforcement
+
+### 1. Blocking Gates (Must Pass)
+- **Code Formatting**: Consistent style enforcement
+- **Analyzer Rules**: Code quality standards
+- **Vulnerable Packages**: Security vulnerability blocking
+- **Deprecated Packages**: Maintenance requirement enforcement
+- **Build Success**: Compilation and warnings-as-errors
+- **Test Success**: All unit and integration tests must pass
+- **Coverage Threshold**: 80% minimum for Controllers & Business logic
+
+### 2. Advisory Gates (Non-Blocking)
+- **Outdated Packages**: PR comments with upgrade suggestions
+- **Security Scan**: CodeQL analysis (results in Security tab)
+
+### 3. Coverage Strategy
+- **Focused Measurement**: Controllers & Business logic only
+- **Realistic Threshold**: 80% for focused scope (vs 80% for entire codebase)
+- **Layer Rationale**:
+  - **Controllers**: API behavior, authentication, validation
+  - **Business Logic**: Core rules, use cases, business processes
+  - **Repository**: Well-tested via integration tests
+  - **Models**: DTOs with minimal executable logic
+
+## Performance Optimizations
+
+### 1. Caching Strategy
+- **NuGet Packages**: 30-50% faster restoration
+- **Cache Key**: OS + file hash for automatic invalidation
+- **Restore Keys**: Fallback to closest match
+
+### 2. Parallel Execution
+- **Quality Gates**: Lint and dependency hygiene run simultaneously
+- **Test Execution**: Unit and integration tests run in parallel
+- **Security Scan**: Runs parallel to build/test chain
+
+### 3. Fail-Fast Design
+- **Quick Checks First**: Format and dependency issues caught early
+- **Resource Optimization**: Prevents wasted compute on known issues
+- **Fast Feedback**: Developers get immediate feedback on simple problems
+
+### 4. Timeout Management
+- **Bootstrap**: 5 minutes (quick setup)
+- **Quality Gates**: 10 minutes each (fast feedback)
+- **Build**: 20 minutes (comprehensive compilation)
+- **Tests**: 15-20 minutes (parallel execution)
+- **Coverage**: 10 minutes (aggregation and enforcement)
+- **Security**: 15 minutes (thorough analysis)
+
+## Local Development Alignment
+
+### 1. Script Mirroring
+The local `scripts/code-review-agent.ps1` mirrors the GitHub workflow:
+- **Same Test Execution**: Unit and integration tests separately
+- **Same Coverage Analysis**: Controllers & Business logic focus
+- **Same Threshold**: 80% enforcement
+- **Same Quality Gates**: Format, build, test, coverage
+
+### 2. Usage Patterns
+```powershell
+# Full local review (mirrors CI)
+powershell -ExecutionPolicy Bypass -File scripts/code-review-agent.ps1 -VerboseOutput
+
+# Quick checks only
+powershell -ExecutionPolicy Bypass -File scripts/code-review-agent.ps1 -QuickOnly
+
+# Skip security scans
+powershell -ExecutionPolicy Bypass -File scripts/code-review-agent.ps1 -SkipSecurity
+```
+
+## Troubleshooting & Maintenance
+
+### 1. Common Issues
+- **Coverage Below Threshold**: Add unit tests for Business logic
+- **Test Failures**: Check integration test data isolation
+- **Build Failures**: Verify warnings-as-errors compliance
+- **Dependency Issues**: Update vulnerable/deprecated packages
+
+### 2. Performance Monitoring
+- **Total Duration**: ~3-5 minutes (vs 8-10 minutes sequential)
+- **Cache Hit Rate**: Monitor NuGet cache effectiveness
+- **Test Execution**: Track unit vs integration test performance
+- **Coverage Trends**: Monitor coverage improvements over time
+
+### 3. Maintenance Tasks
+- **Quarterly Review**: Coverage threshold adjustments
+- **Dependency Updates**: Regular package updates
+- **Workflow Optimization**: Performance improvements
+- **Security Updates**: CodeQL rule updates
+
+## Best Practices
+
+### 1. Development Workflow
+- **Pre-Commit**: Run local script before pushing
+- **PR Quality**: Ensure all gates pass before review
+- **Coverage Focus**: Prioritize Controllers & Business logic tests
+- **Security Awareness**: Review CodeQL findings regularly
+
+### 2. Team Collaboration
+- **Consistent Standards**: All developers follow same quality gates
+- **Fast Feedback**: Parallel execution provides quick results
+- **Clear Documentation**: Artifacts and reports provide transparency
+- **Security Culture**: Regular security scanning and updates
+
+### 3. Continuous Improvement
+- **Performance Monitoring**: Track execution times and cache effectiveness
+- **Coverage Analysis**: Regular review of coverage trends
+- **Security Updates**: Stay current with security best practices
+- **Workflow Evolution**: Adapt to changing requirements and technologies
+
+This workflow provides a comprehensive, efficient, and maintainable CI/CD pipeline that ensures code quality while providing fast feedback to developers.

@@ -1,0 +1,5 @@
+# CODEOWNERS
+/KonaAI-API/KonaAI.Master/KonaAI.Master.API/* @api-reviewers
+/KonaAI-API/KonaAI.Master/KonaAI.Master.Business/* @business-reviewers
+/KonaAI-API/KonaAI.Master/KonaAI.Master.Repository/* @repository-reviewers
+/KonaAI-API/KonaAI.Master/KonaAI.Master.Model/* @model-reviewers

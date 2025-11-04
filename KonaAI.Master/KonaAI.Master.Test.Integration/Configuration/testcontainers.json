@@ -1,0 +1,32 @@
+{
+  "testcontainers": {
+    "mssql": {
+      "image": "mcr.microsoft.com/mssql/server:2022-latest",
+      "environment": {
+        "ACCEPT_EULA": "Y",
+        "MSSQL_SA_PASSWORD": "Test@123456"
+      },
+      "port": 1433,
+      "waitStrategy": {
+        "type": "port",
+        "timeout": 120
+      }
+    }
+  },
+  "testSettings": {
+    "database": {
+      "useTestcontainers": true,
+      "containerTimeout": 300,
+      "cleanupOnDispose": true
+    },
+    "performance": {
+      "maxConcurrentTests": 5,
+      "testTimeout": 300,
+      "largeDatasetSize": 1000
+    },
+    "multiTenancy": {
+      "defaultClientCount": 3,
+      "testClientIds": [1, 2, 3]
+    }
+  }
+}

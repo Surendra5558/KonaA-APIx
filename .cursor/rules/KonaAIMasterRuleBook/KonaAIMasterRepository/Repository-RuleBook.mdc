@@ -1,0 +1,252 @@
+---
+description: Repository layer rules for KonaAI.Master.Repository covering EF Core configuration, UoW, multi-tenancy, and design-time tooling.
+globs: KonaAI.Master/KonaAI.Master.Repository/***
+alwaysApply: false
+modifiedAt: 2025-09-26
+---
+# KonaAI.Master.Repository RuleBook
+
+EF Core infrastructure: contexts, mappings, repositories, UoW, and multi-tenancy.
+
+## 1) DbContext Configuration
+- `DefaultContext` uses SQL Server; connection loaded from `appsettings.json` (API)
+- Apply configurations via `modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly())`
+- Suppress `PendingModelChangesWarning` (ensure migrations are updated intentionally)
+- Register the migrations assembly to repository project in API service registration
+
+## 2) Multi-Tenancy (Global Filters)
+- Inject `IUserContextService` into `DefaultContext` to capture `ClientId`
+- Apply a global filter for all entities deriving from `BaseClientDomain`
+- Ensure `UserContextService` sets `ClientId` from claims; bypass only for login endpoints
+
+```csharp
+if (_clientId != null)
+{
+  Expression<Func<BaseClientDomain, bool>> filter = e => e.ClientId == _clientId;
+  foreach (var et in modelBuilder.Model.GetEntityTypes())
+  {
+    if (!et.ClrType.IsAssignableTo(typeof(BaseClientDomain))) continue;
+    var p = Expression.Parameter(et.ClrType);
+    var body = ReplacingExpressionVisitor.Replace(filter.Parameters.First(), p, filter.Body);
+    et.SetQueryFilter(Expression.Lambda(body, p));
+  }
+}
+```
+
+## 3) Design-Time Factory
+- `DefaultContextFactory` loads API `appsettings.json` for EF tools
+- Provide a stub `IUserContextService` for design-time
+- Use when running migrations/scaffolding so connection and filters are consistent
+
+## 4) Unit of Work & Repository Usage
+- Expose repositories via `IUnitOfWork` for aggregates
+- Scope write operations per use-case; commit once
+- Keep repositories thin; prefer projection to DTOs in queries
+
+## 5) Performance & Querying
+- Use `AsNoTracking` for read-only queries
+- Avoid N+1; prefer includes or explicit projections
+- Return `IQueryable<TEntity>` or projections for OData scenarios; apply filters and paging upstream
+- Ensure queries composed by Business (joins/projections) remain EF-translatable; avoid patterns that force client evaluation.
+- Keep repositories thin; expose entities and let Business apply AutoMapper `ProjectTo<T>` for ViewModel projections.
+
+## 6) Auditing & Defaults
+- `UserContextService.SetDomainDefaults` sets audit fields and client scoping on entities
+- Use `DateTime.UtcNow` for timestamps; avoid local time
+- Never set PII into audit fields
+
+Note: Write endpoints must carry a valid authenticated principal. If `IUserContextService` lacks `ClientId`/user claims (e.g., unauthenticated POST), audit fields and `ClientId` will be null/0. Enforce `[Authorize]` at API and ensure tokens include `ClientId`, `Sid`, and `Name`.
+
+## 7) Security Considerations
+- Claims expected: `Sid`, `Name`, `email`, `RoleId`, `Role`, `ClientId`, `Client`
+- Throw `UnauthorizedAccessException` when user is missing (outside login path)
+- Do not read secrets from repository code; use connection strings via configuration bindings
+
+## 8) PR-Review Checklist (Repository)
+- Configurations implemented via `IEntityTypeConfiguration<>` under `Configuration/*`
+- Global query filter applied for tenant entities
+- Read queries use `AsNoTracking` and projections
+- `IUserContextService` used for audit defaults; no hardcoded user data
+- Design-time factory loads API `appsettings.json` and compiles
+- Migrations updated with intentional changes; snapshot synced
+- No direct `HttpContext` access in repositories; use abstractions only
+ - XML summaries present on public repository interfaces, implementations (public members), and configuration classes where appropriate.
+
+## 9) References
+- Contexts: `DefaultContext.cs`, `MasterDefaultContext.cs`, `TenantDefaultContext.cs`
+- Design-time: `DesignTime/DefaultContextFactory.cs`
+- User Context: `Common/UserContextService.cs`, `Common/Interface/IUserContextService.cs`
+- Configurations: `Configuration/**/*`
+- Data Access: `DataAccess/**/*`
+ - CI Workflow: `.github/workflows/code-review.yml`
+ - Local Checks: `scripts/code-review-agent.ps1`
+
+## 10) Additional Important Notes
+- Context partials: master/tenant entity sets are organized via partial classes (`MasterDefaultContext.cs`, `TenantDefaultContext.cs`); keep DbSet exposure in these partials per feature area.
+- Connection/resilience: in API registration, enable `EnableRetryOnFailure` with bounded retries and delay; prefer this over custom retry logic in repositories.
+- OnConfiguring: repository currently reads `appsettings.json`; prefer API-driven options registration for runtime and reserve OnConfiguring for design-time fallback only.
+- Global filters: `SetQueryFilter` is applied dynamically across all `BaseClientDomain` types; for complex predicates consider per-entity `HasQueryFilter` to aid query plan caching.
+- Login bypass: `UserContextService` skips context extraction when path contains `Login`; prefer a stricter match (exact route) to avoid accidental bypass.
+- Time handling: use `DateTime.UtcNow` for audit fields; avoid local time to ensure consistency across time zones and services.
+- Projections: when exposing `IQueryable` upstream, project to ViewModels before returning to avoid leaking entities and to control selected fields.
+
+## 11) File & Directory Map (Repository Project)
+- Root: `KonaAI.Master/KonaAI.Master.Repository/`
+  - `KonaAI.Master.Repository.csproj` — targets net9.0; referenced by API and Business
+  - `DefaultContext.cs` — core EF Core context (OnConfiguring, OnModelCreating, global filters)
+  - `MasterDefaultContext.cs` — partial class with DbSet exposure for master entities
+  - `TenantDefaultContext.cs` — partial class with DbSet exposure for tenant entities
+  - `DesignTime/`
+    - `DefaultContextFactory.cs` — design-time factory loading API `appsettings.json` and stub user context
+  - `Configuration/` — `IEntityTypeConfiguration<>` mappings per entity
+    - `Master/**.cs` — master entity configurations
+    - `Tenant/**.cs` — tenant entity configurations
+  - `Domain/` — entity classes grouped by master/tenant
+    - `Master/**.cs`
+    - `Tenant/**.cs`
+  - `DataAccess/` — repository interfaces/implementations for aggregates (Master, Tenant)
+  - `Common/`
+    - `Interface/` — shared abstractions (`IUnitOfWork`, `IUserContextService`, repositories)
+    - `Constants/` — shared enums/constants (e.g., `DataModes`)
+    - `Extensions/` — shared helpers (entity base configuration, etc.)
+    - `Model/` — common models (e.g., `UserContext`)
+    - `UserContextService.cs` — extracts claims, applies audit defaults and tenant scoping
+  - `Migrations/` — EF migrations and snapshot
+  - `bin/`, `obj/` — build artifacts
+
+Notes:
+- Keep partial context files (`MasterDefaultContext.cs`, `TenantDefaultContext.cs`) limited to DbSet exposure; keep configuration logic centralized.
+- Place new entity configurations under `Configuration/*` using `IEntityTypeConfiguration<>`.
+- Add corresponding entity classes under `Domain/*` and repository interfaces under `DataAccess/*` as needed.
+
+## 12) XML Documentation Standards
+
+### 12.1 Cref Attribute Guidelines
+```csharp
+// ✅ Good: Valid cref references
+/// <summary>
+/// Repository for performing CRUD operations on ProjectAuditResponsibility entities within the <see cref="DefaultContext"/>.
+/// </summary>
+
+// ✅ Good: Plain text when type doesn't exist
+/// <summary>
+/// Sets up table schema, metadata properties, and relationships with LicenseType.
+/// </summary>
+
+// ❌ Bad: Invalid cref references
+/// <summary>
+/// Repository for <see cref="ClientProjectAuditResponsibility"/> entities.
+/// </summary>
+```
+
+### 12.2 Parameter Documentation
+```csharp
+// ✅ Good: Correct paramref usage
+/// <param name="ids">The collection of numeric identifiers.</param>
+/// <exception cref="ArgumentNullException"><paramref name="ids" /> is <see langword="null" />.</exception>
+
+// ❌ Bad: Incorrect paramref usage
+/// <exception cref="ArgumentNullException"><paramref name="source" /> is <see langword="null" />.</exception>
+```
+
+### 12.3 Interface Documentation
+```csharp
+// ✅ Good: Accurate interface documentation
+/// <summary>
+/// Defines repository operations for ProjectAuditResponsibility entities within the <see cref="DefaultContext"/>.
+/// Inherits standard CRUD and query methods from <see cref="IRepository{DefaultContext, ProjectAuditResponsibility}"/>.
+/// </summary>
+
+// ❌ Bad: Non-existent type references
+/// <summary>
+/// Defines repository operations for <see cref="ClientProjectAuditResponsibility"/> entities.
+/// </summary>
+```
+
+### 12.4 Whitespace Formatting Standards
+```csharp
+// ✅ Good: Proper XML documentation formatting
+/// <summary>
+/// Configures the entity mapping and relationships for the <see cref="ClientLicense"/> entity.
+/// Sets up table schema, metadata properties, and relationships with LicenseType.
+/// </summary>
+
+// ❌ Bad: Incorrect indentation
+/// <summary>
+/// Configures the entity mapping and relationships for the <see cref="ClientLicense"/> entity.
+    /// Sets up table schema, metadata properties, and relationships with LicenseType.
+/// </summary>
+```
+
+### 12.5 Namespace Formatting
+```csharp
+// ✅ Good: Proper namespace formatting
+namespace KonaAI.Master.Repository.Configuration.Tenant.Client;
+
+/// <summary>
+/// Class documentation here.
+/// </summary>
+
+// ❌ Bad: Missing line breaks
+namespace KonaAI.Master.Repository.Configuration.Tenant.Client;
+/// <summary>
+/// Class documentation here.
+/// </summary>
+```
+
+### 12.6 Common Anti-Patterns to Avoid
+- **Invalid Cref References**: Don't reference types that don't exist
+- **Incorrect Parameter Names**: Don't use wrong parameter names in paramref
+- **Poor Whitespace**: Don't use inconsistent indentation in XML docs
+- **Missing Line Breaks**: Don't skip line breaks after namespace declarations
+- **Non-Existent Types**: Don't reference types that aren't in the current assembly
+
+### 12.7 Best Practices
+- **Verify Type Existence**: Always verify that cref references point to existing types
+- **Use Plain Text**: Use plain text instead of cref for non-existent types
+- **Consistent Formatting**: Maintain consistent XML documentation formatting
+- **Proper Indentation**: Use consistent indentation in XML documentation
+- **Parameter Accuracy**: Ensure paramref names match actual parameter names
+
+### 12.8 Validation Checklist
+- [ ] All cref attributes reference existing types
+- [ ] All paramref attributes use correct parameter names
+- [ ] XML documentation is properly formatted
+- [ ] No extra spaces or inconsistent indentation
+- [ ] Line breaks are properly placed after namespace declarations
+- [ ] Build passes with `/warnaserror` flag
+- [ ] No XML documentation warnings
+- [ ] No whitespace formatting errors
+- [ ] All cref attributes resolve correctly
+
+## 13) Change Propagation & Cross-References
+
+**See Orchestrator-RuleBook.mdc for centralized change coordination across all layers.**
+
+This rulebook is automatically updated when:
+- DbContext, migrations, or entity configurations change
+- Multi-tenancy patterns or UoW usage is modified
+- Repository interfaces or query patterns are updated
+- XML documentation standards or formatting requirements change
+
+## Tenant Metadata Table Mapping (ClientProjectCountry)
+
+- Ensure EF configurations use `BaseClientMetaDataConfiguration("<Table>", "ClientUserMetaData")` to set schema/table explicitly.
+- Example: `ClientProjectCountry` must map to `ClientUserMetaData.ClientProjectCountry` to avoid default pluralized/no-schema names (`ClientProjectCountries`).
+- Verify `TenantDefaultContext` DbSet names align with table mapping.
+- When renaming tables (singular to plural or vice versa), update the configuration and provide a migration to rename with schema preserved.
+
+## Seeding Client Metadata (Repository Migrations)
+
+- For tenant-scoped metadata (e.g., `ClientProjectCountry`) seed data should be added via repository migrations only when necessary and idempotent.
+- Use explicit schema-qualified table names in raw SQL when applicable.
+- Keep seeds small and scoped; prefer application-level upserts for dynamic data.
+- Reference example: `20250930125117_AddClientProjectCountrySeed.cs` adds seed data for client project country lookups.
+
+## ClientUserMetaData Upsert Patterns (Driven by Business)
+
+- Business resolves master metadata by `RowId` and may insert client-specific metadata if missing.
+- Repositories provide simple `AddAsync` and `GetAsync` operations; no business logic.
+- Ensure configurations for client metadata entities use `BaseClientMetaDataConfiguration("<Table>", "ClientUserMetaData")`.
+- Audit defaults and `ClientId` are applied via `UserContextService.SetDomainDefaults` before `AddAsync`.
+- Migrations should include these tables with proper PK, audit fields, and necessary unique indexes per client when required.

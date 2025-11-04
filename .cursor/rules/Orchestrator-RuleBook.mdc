@@ -1,0 +1,261 @@
+---
+description: Orchestrator for KonaAI.Master rulebooks. Guides agents on which rulebooks to read before starting work and which to update after completing changes.
+globs: **/*
+alwaysApply: true
+modifiedAt: 2025-09-26
+---
+# Rulebook Orchestrator
+
+**Central coordinator for agents working on KonaAI.Master tasks.**
+
+## 1) Purpose
+- **Guide agents on which rulebooks to READ before starting work**
+- **Identify which rulebooks need UPDATES after completing changes**
+- **Prevent rulebook drift** by ensuring related documentation stays synchronized
+- **Provide clear guidance** on rulebook coordination for any given task
+
+## 2) Rulebook Locations
+- Engineering Handbook: `.cursor/rules/KonaAIMasterRuleBook/KonaAI.Master-Engineering-Handbook.mdc`
+- API: `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterAPI/API-RuleBook.mdc`
+- Business: `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterBusiness/Business-RuleBook.mdc`
+- Repository: `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterRepository/Repository-RuleBook.mdc`
+- Model: `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterModel/Model-RuleBook.mdc`
+- Tests (Unit): `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterTests/TestUnit-RuleBook.mdc`
+- Tests (Integration): `.cursor/rules/KonaAIMasterRuleBook/KonaAIMasterTests/TestIntegration-RuleBook.mdc`
+- DB Migration: `.cursor/rules/DB-Migration-RuleBook.mdc`
+- Code Review (Local): `.cursor/rules/CodeReview/local-code-review-rulebook.mdc`
+- Code Review (GitHub): `.cursor/rules/CodeReview/github-workflow-rulebook.mdc`
+
+## 2.1) Documentation References
+- **Local Script Guide**: `CodeReviewAgent/docs/LOCAL_SCRIPT_COMPLETE_GUIDE.md` - Complete local PowerShell script documentation
+- **GitHub Workflow Guide**: `CodeReviewAgent/docs/GITHUB_WORKFLOW_COMPLETE_GUIDE.md` - Complete GitHub Actions workflow documentation
+
+## 3) Agent Workflow Matrix
+
+### DTO/ViewModel Changes
+**Task:** Working on `KonaAI.Master.Model` project
+**READ BEFORE STARTING:**
+- Model RuleBook (primary)
+- API RuleBook (if affects request/response contracts)
+- Business RuleBook (if affects mapping)
+- Repository RuleBook (if affects projections)
+- Test Unit RuleBook (if affects test data)
+- Test Integration RuleBook (if affects integration test models)
+- Engineering Handbook (if affects overall patterns)
+
+**UPDATE AFTER COMPLETING:**
+- Model RuleBook (primary)
+- API RuleBook (if affects request/response contracts)
+- Business RuleBook (if affects mapping)
+- Repository RuleBook (if affects projections)
+- Test Unit RuleBook (if affects test data)
+- Test Integration RuleBook (if affects integration test models)
+- Engineering Handbook (if affects overall patterns)
+
+### API/Controller Changes
+**Task:** Working on `KonaAI.Master.API` project
+**READ BEFORE STARTING:**
+- API RuleBook (primary)
+- Business RuleBook (if affects controller-to-business interaction)
+- Repository RuleBook (if affects multi-tenancy/auth patterns)
+- Test Unit RuleBook (if affects controller testing)
+- Test Integration RuleBook (if affects API testing)
+- Engineering Handbook (if affects routing/auth patterns)
+
+**UPDATE AFTER COMPLETING:**
+- API RuleBook (primary)
+- Business RuleBook (if affects controller-to-business interaction)
+- Repository RuleBook (if affects multi-tenancy/auth patterns)
+- Test Unit RuleBook (if affects controller testing)
+- Test Integration RuleBook (if affects API testing)
+- Engineering Handbook (if affects routing/auth patterns)
+
+### Business Logic Changes
+**Task:** Working on `KonaAI.Master.Business` project
+**READ BEFORE STARTING:**
+- Business RuleBook (primary)
+- API RuleBook (if affects controller contracts)
+- Repository RuleBook (if affects UoW patterns)
+- Model RuleBook (if affects DTO usage)
+- Test Unit RuleBook (if affects business testing)
+- Test Integration RuleBook (if affects integration flows)
+- Engineering Handbook (if affects use-case patterns)
+
+**UPDATE AFTER COMPLETING:**
+- Business RuleBook (primary)
+- API RuleBook (if affects controller contracts)
+- Repository RuleBook (if affects UoW patterns)
+- Model RuleBook (if affects DTO usage)
+- Test Unit RuleBook (if affects business testing)
+- Test Integration RuleBook (if affects integration flows)
+- Engineering Handbook (if affects use-case patterns)
+
+### Repository/Data Changes
+**Task:** Working on `KonaAI.Master.Repository` project
+**READ BEFORE STARTING:**
+- Repository RuleBook (primary)
+- DB Migration RuleBook (if affects migrations/schema)
+- Business RuleBook (if affects UoW patterns)
+- API RuleBook (if affects multi-tenancy/auth)
+- Model RuleBook (if affects entity/DTO relationships)
+- Test Unit RuleBook (if affects repository testing)
+- Test Integration RuleBook (if affects data access testing)
+- Engineering Handbook (if affects data patterns)
+
+**UPDATE AFTER COMPLETING:**
+- Repository RuleBook (primary)
+- DB Migration RuleBook (if affects migrations/schema)
+- Business RuleBook (if affects UoW patterns)
+- API RuleBook (if affects multi-tenancy/auth)
+- Model RuleBook (if affects entity/DTO relationships)
+- Test Unit RuleBook (if affects repository testing)
+- Test Integration RuleBook (if affects data access testing)
+- Engineering Handbook (if affects data patterns)
+
+### Test Changes
+**Task:** Working on `KonaAI.Master.Test.*` projects
+**READ BEFORE STARTING:**
+- Test Unit RuleBook (if unit test changes)
+- Test Integration RuleBook (if integration test changes)
+- API RuleBook (if affects API testing patterns)
+- Business RuleBook (if affects business testing)
+- Repository RuleBook (if affects data testing)
+- Engineering Handbook (if affects testing strategy)
+
+**UPDATE AFTER COMPLETING:**
+- Test Unit RuleBook (if unit test changes)
+- Test Integration RuleBook (if integration test changes)
+- API RuleBook (if affects API testing patterns)
+- Business RuleBook (if affects business testing)
+- Repository RuleBook (if affects data testing)
+- Engineering Handbook (if affects testing strategy)
+
+### Code Review Workflow Changes
+**Task:** Working on GitHub Actions workflow, local scripts, or code review documentation
+**READ BEFORE STARTING:**
+- GitHub Workflow RuleBook (if workflow changes)
+- Local Code Review RuleBook (if script changes)
+- Engineering Handbook (if affects overall CI/CD patterns)
+- Complete Documentation Guides (for comprehensive understanding)
+
+**UPDATE AFTER COMPLETING:**
+- GitHub Workflow RuleBook (if workflow changes)
+- Local Code Review RuleBook (if script changes)
+- Engineering Handbook (if affects overall CI/CD patterns)
+- Complete Documentation Guides (if documentation structure changes)
+
+## 4) Quick Reference
+- **Single Layer Change:** Read that layer's RuleBook + Engineering Handbook
+- **Cross-Layer Change:** Read all affected layer RuleBooks + Engineering Handbook
+- **Architecture Change:** Read Engineering Handbook + all relevant layer RuleBooks
+- **Process Change:** Read Engineering Handbook + CodeReview RuleBooks
+- **Code Review Changes:** Read CodeReview RuleBooks + Complete Documentation Guides
+- **Documentation Changes:** Read Complete Documentation Guides + affected RuleBooks
+
+## 5) Agent Usage
+1. **Identify your task** (which project you're working on)
+2. **Check this matrix** to see which RuleBooks to READ before starting
+3. **Read the identified RuleBooks** to understand patterns and conventions
+4. **Implement changes** following established patterns
+5. **Update the identified RuleBooks** with new patterns/examples discovered
+6. **Ensure all updates** are included in the same PR
+
+## 6) Mandatory Agent Workflow
+**All agents working on KonaAI.Master tasks MUST follow this process:**
+
+### Pre-Implementation Phase (MANDATORY)
+1. **Read this orchestrator first** to identify affected rulebooks
+2. **Read the identified rulebooks** to understand current patterns and conventions
+3. **Plan implementation** based on established standards
+
+### Implementation Phase
+- Follow the patterns and conventions found in the relevant rulebooks
+- Implement changes according to established standards
+- Ensure all changes align with architectural principles
+
+### Post-Implementation Phase (MANDATORY)
+1. **Update the affected rulebooks** with any new patterns, examples, or conventions discovered
+2. **Ensure cross-references remain accurate** between rulebooks
+3. **Update the Engineering Handbook** if architectural patterns changed
+4. **Verify all rulebook links and references** are still valid
+5. **Include all rulebook updates in the same PR** as code changes
+
+### Quality Assurance
+- **No repetition**: Each rulebook should contain unique, layer-specific guidance
+- **Consistency**: All rulebooks should align with the Engineering Handbook
+- **Accuracy**: Examples and references must reflect actual implementation
+- **Completeness**: All affected rulebooks must be updated in the same PR
+
+## 7) Recent Major Implementation: Unit Test Coverage Expansion
+
+### 7.1) Completed Work (2025-01-XX)
+- **Added comprehensive controller unit tests** for all API controllers
+- **Expanded business layer unit tests** with advanced patterns
+- **Updated rulebooks** with new testing patterns and controller testing guidance
+
+### 7.2) Test Coverage Expansion
+- **Controller Tests**: Added unit tests for all Master and Tenant controllers
+- **Business Tests**: Enhanced business layer tests with advanced mocking patterns
+- **Test Patterns**: Established consistent patterns for controller and business testing
+- **Coverage Focus**: Maintained 80% threshold for Controllers & Business logic
+
+### 7.3) Rulebook Updates Applied
+- **TestUnit-RuleBook**: Added controller testing patterns, CRUD testing guidance, and HTTP status code validation
+- **API-RuleBook**: Added controller testing requirements and examples
+- **Orchestrator RuleBook**: Updated to reflect new testing patterns
+
+### 7.4) Key Testing Patterns Established
+- **Controller Testing**: Mock `ILogger<T>`, `IBusiness`, and `IValidator<T>` dependencies
+- **HTTP Status Codes**: Test all scenarios (200, 201, 204, 400, 404, 500)
+- **Validation Testing**: Mock `ValidationResult` for success and failure cases
+- **OData Results**: Use `NotFoundODataResult` for 404, `OkObjectResult` for 200
+- **Exception Handling**: Test business exceptions propagate to appropriate HTTP status codes
+
+## 8) Previous Major Implementation: Documentation Consolidation
+
+### 8.1) Completed Work (2025-01-XX)
+- **Consolidated 5 individual documentation files** into 2 comprehensive guides
+- **Removed redundant documentation** to improve maintainability
+- **Updated all rulebooks** to reference new consolidated documentation structure
+
+### 8.2) Documentation Structure Changes
+- **GitHub Workflow Guide**: `CodeReviewAgent/docs/GITHUB_WORKFLOW_COMPLETE_GUIDE.md` - Complete GitHub Actions workflow documentation
+- **Local Script Guide**: `CodeReviewAgent/docs/LOCAL_SCRIPT_COMPLETE_GUIDE.md` - Complete local PowerShell script documentation
+- **Removed Files**: 5 individual documentation files consolidated into the above 2 comprehensive guides
+
+### 8.3) Rulebook Updates Applied
+- **CodeReview RuleBooks**: Updated to reference new consolidated documentation
+- **Orchestrator RuleBook**: Added Code Review workflow section and documentation references
+- **Glob Patterns**: Updated to include new documentation file patterns
+
+### 8.4) Benefits Achieved
+- **Single Source of Truth**: Each topic now has one comprehensive document
+- **Better Organization**: Related information grouped logically
+- **Easier Maintenance**: Updates only need to be made in one place per topic
+- **Improved Readability**: Clear structure with consistent formatting
+- **Complete Coverage**: All information preserved and better organized
+
+## 9) Previous Major Implementation: Unit Test Coverage Completion
+
+### 9.1) Completed Work (2025-01-XX)
+- **All pending unit tests implemented** for KonaAI.Master.Business layer
+- **67 passing tests, 2 skipped tests** (AutoMapper ProjectTo limitations)
+- **Updated rulebooks** with new testing patterns and business logic patterns
+
+### 9.2) Rulebook Updates Applied
+- **TestUnit-RuleBook**: Added advanced mocking patterns for ExecuteAsync, service dependencies, UserContext null handling, AutoMapper ProjectTo limitations, and repository exception propagation
+- **Business-RuleBook**: Added advanced business patterns for ExecuteAsync transactions, service dependencies with complex logic, UserContext null safety, AutoMapper ProjectTo with complex joins, and exception handling patterns
+
+### 9.3) Key Patterns Discovered
+- **ExecuteAsync Transaction Testing**: Ensure delegate execution in unit tests
+- **Service Dependencies**: Mock complex return types with concrete values
+- **UserContext Null Safety**: Handle null UserContext scenarios properly
+- **AutoMapper ProjectTo**: Consider integration tests for complex projections
+- **Exception Propagation**: Ensure proper exception handling and logging
+
+### 9.4) Test Coverage Status
+- **Master/MetaData**: 6 business classes tested
+- **Master/UserMetaData**: 4 business classes tested  
+- **Tenant/Client**: 3 business classes tested
+- **Tenant/MetaData**: 1 business class tested
+- **Total**: 14 business classes with comprehensive unit test coverage
