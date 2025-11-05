@@ -49,4 +49,4 @@ jobs:
            kubectl apply -f KonaAI.Master/kubernetes-manifests/Deployment.yaml
            #kubectl rollout restart deployment ui-deployment
            #kubectl rollout status deployment/ui-deployment
-           kubectl apply -f KonaAI.Master/kubernetes-manifests/API-Ingress.yaml
+           #kubectl apply -f KonaAI.Master/kubernetes-manifests/API-Ingress.yaml
