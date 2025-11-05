@@ -27,7 +27,7 @@ jobs:
       # Step 4: Build and push Docker image
       - name: 'Build and push Docker container'
         run: |
-          IMAGE=us-central1-docker.pkg.dev/konaai-dev-462909/konaai-gke/api
+          IMAGE=us-central1-docker.pkg.dev/konaai-dev-462909/konaai-gke/dev-api
           docker build -f KonaAI.Master/KonaAI.Master.API/Dockerfile -t $IMAGE:${{ github.sha }} .
           docker push $IMAGE:${{ github.sha }}
 
