@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: api-container
-        image: us-central1-docker.pkg.dev/konaai-dev-462909/konaai-gke/api:latest
+        image: us-central1-docker.pkg.dev/konaai-dev-462909/konaai-gke/dev-api:latest
         ports:
         - containerPort: 8080
         resources:
