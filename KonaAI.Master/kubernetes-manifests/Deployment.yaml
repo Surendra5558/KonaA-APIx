@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-deployment
-  namespace: ingress-nginx
+  namespace: konaai-dev
   labels:
     app: api-app
 spec:
@@ -31,7 +31,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: api-service
+  name: konaai-dev
   namespace: ingress-nginx
 spec:
   selector:
