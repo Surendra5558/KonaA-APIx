@@ -2,8 +2,8 @@ apiVersion: v2               # Required: chart API version (v2 for Helm 3+)
 name: konaaiapi                # Your chart name (same as folder name usually) 
 description: A helm chart for deploying MyApp to GKE 
 type: application            # "application" or "library" (99% cases use application)
-version: 1.0.0               # Chart version (increment when chart changes) 
-appVersion: "1.0.0"          # Your application version (e.g. Docker image tag)
+version: 1.1.0               # Chart version (increment when chart changes) 
+appVersion: "1.1.0"          # Your application version (e.g. Docker image tag)
 keywords:
   - gke
   - myapp
