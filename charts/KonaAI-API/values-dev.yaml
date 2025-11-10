@@ -23,6 +23,7 @@ resources:
     cpu: "300m"
 labels:
   app: api-app
+  
 autoscaling:
   enabled: true       # set true if you want HPA
   minReplicas: 1
