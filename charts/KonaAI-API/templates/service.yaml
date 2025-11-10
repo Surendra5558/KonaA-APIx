@@ -3,13 +3,13 @@ kind: Service
 metadata:
   name: {{ .Values.service.name }}
   labels:
-    {{- include "api-helm.labels" . | nindent 4 }}
+    {{- include "konaaiapi.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
     - port: {{ .Values.service.port }}
-      targetPort: http
+      targetPort: {{ .Values.service.targetPort }}
       protocol: TCP
       name: http
   selector:
-    {{- include "ui-helm.selectorLabels" . | nindent 4 }}
+    {{- include "konaaiapi.selectorLabels" . | nindent 4 }}
