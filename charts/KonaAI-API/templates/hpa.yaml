@@ -2,7 +2,7 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "KonaAI-API.fullname" . }}
+  name: {{ .Values.hpa.name }}
   labels:
     {{- include "KonaAI-API.labels" . | nindent 4 }}
 spec:
