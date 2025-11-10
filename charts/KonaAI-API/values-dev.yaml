@@ -1,4 +1,4 @@
-namespace: konaai-dev  # Change to "default" if you're moving everything there
+namespace: konaai-api  # Change to "default" if you're moving everything there
 deployment:
   name: konaai-dev-api
 replicaCount: 1
@@ -23,7 +23,6 @@ resources:
     cpu: "300m"
 labels:
   app: api-app
-  
 autoscaling:
   enabled: true       # set true if you want HPA
   minReplicas: 1
@@ -31,7 +30,5 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
 serviceAccount:
   create: false
-ingress:
-  enabled: false
 
       
