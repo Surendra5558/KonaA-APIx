@@ -1,0 +1,57 @@
+---
+name: GKE-Dev_UI
+on:
+  workflow_dispatch: null
+jobs:
+  setup-build-publish-deploy:
+    name: Setup, Build, Publish, and Deploy
+    runs-on: ubuntu-latest
+    environment: Dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Google Cloud auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GKE_LOGIN_SERVER }}  
+          
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER2_NAME }}
+          location: ${{ secrets.GKE_LOCATION }}
+          project_id: ${{ secrets.GKE_PROJECT }}
+          
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+          
+      - name: Build and push Docker container
+        run: |
+          IMAGE=us-central1-docker.pkg.dev/konaai-dev-462909/konaai-gke/dev-api
+          docker build -f KonaAI.Master/KonaAI.Master.API/Dockerfile -t $IMAGE:${{ github.sha }} .
+          docker push $IMAGE:${{ github.sha }}
+
+          # Optional: also push "latest" tag
+          docker tag $IMAGE:${{ github.sha }} $IMAGE:latest
+          docker push $IMAGE:latest
+
+      - name: Helm install or upgrade
+        run: |
+          RELEASE_NAME=konaai-dev-api
+          NAMESPACE=konaai-dev
+          CHART_PATH=./charts/KonaAI-API
+
+          # Make sure namespace exists
+          kubectl get ns $NAMESPACE || kubectl create ns $NAMESPACE
+
+          # Add a unique timestamp so Helm always triggers a rollout
+          helm upgrade --install $RELEASE_NAME $CHART_PATH \
+          --namespace $NAMESPACE \
+          --values ./charts/KonaAI-API/values-dev.yaml \
+          --set image.tag=latest \
+          --set image.pullPolicy=Always \
+          --set-string buildTimestamp=$(date +%s) \
+
+
+           
