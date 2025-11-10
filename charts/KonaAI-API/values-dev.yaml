@@ -30,6 +30,8 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
 serviceAccount:
   create: false
+hpa:
+ name: konaai-dev-api
 ingress:
   enabled: false
   name: konaai-dev-ingress
