@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "KonaAI-API.fullname" . }}
+  name: {{ .Values.deployment.name }}
   labels:
     {{- include "KonaAI-API.labels" . | nindent 4 }}
 spec:
